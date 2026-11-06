@@ -38,7 +38,7 @@
 
   function generateCSS(cfg, server) {
     const { selector, attribute, tag, startContext, endContext, useStartsWith, useEndsWith } = cfg;
-    const windowSize = cfg.windowSize || 3;
+    const windowSize = cfg.windowSize || 4;
     // For hidden inputs the requests are made by the next sibling.
     const target = tag === 'input' ? '+*' : '';
     const rules = [];
