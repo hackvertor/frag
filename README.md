@@ -16,11 +16,13 @@ This is useful in contexts where CSS injection is possible but JavaScript is blo
 
 1. **Fragment exfiltration** — CSS attribute selectors (`^=`, `*=`, `$=`) match overlapping chunks of a token embedded in an element's attribute. Each matching selector triggers a `background-image` request to your server, revealing which chunk was present.
 
-2. **Graph reconstruction** — The received chunks are modelled as edges in a De Bruijn graph. Frag finds an Eulerian path through the graph to reconstruct the original token, using the Chinese Postman Problem for handling repeated chunks.
+2. **Graph reconstruction** — The received chunks are modelled as edges in a De Bruijn graph. Frag searches for every walk of exactly the configured token length that starts with the leaked start chunk, ends with the leaked end chunk, and uses only leaked chunks.
 
-3. **Noise removal** — Chunks that come from known parts of the URL (not the token itself) are identified and filtered out using context-based analysis.
+3. **Noise handling** — Hex from the rest of the attribute (e.g. `bac` in `callback`, or junk query parameters) also leaks as chunks and can link into the token's graph. Walks are ranked by how cheaply the chunks they leave unused can be explained as one contiguous run of junk, so junk is left over rather than spliced into the token. Chunks from the known start/end context are always free to leave over.
 
-4. **Token length filtering** — A known token length is used to reject incorrect reconstructions and filter self-loop candidates.
+4. **Ambiguity reporting** — Only the *set* of chunks leaks, not their order or count, so different tokens can leak identical data (e.g. when a 2-character pair appears three times). When that happens every equally plausible token is listed as a candidate rather than one being picked at random. With 3-character windows about 45% of random 40-char hex tokens are ambiguous (usually 2–4 candidates); beyond ~64 chars most are, and the candidate list is capped and marked truncated.
+
+The server waits until requests have stopped arriving for a second before stitching, so a poll mid-burst can't lock in a reconstruction from partial data.
 
 ## Features
 
@@ -52,6 +54,14 @@ Use the web UI to configure:
 | **start** | Known text immediately before the token |
 | **end** | Known text immediately after the token |
 | **length** | Expected token length (improves stitching accuracy) |
+
+### Testing
+
+```bash
+npm test
+```
+
+The tests generate random hex tokens of every length from 6 to 40, embed them in anchors (with and without random hex junk on the end of the href) and hidden inputs, work out which requests the real CSS payload (`public/payload.js`) would trigger, and check the stitched result. Runs are seeded; use `FRAG_SEED=<n> npm test` to try a different set of tokens.
 
 ### Usage
 
