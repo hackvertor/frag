@@ -10,6 +10,8 @@ Frag is a tool for extracting secret tokens from web pages using only CSS — no
 
 This is useful in contexts where CSS injection is possible but JavaScript is blocked — such as webmail clients, HTML email rendering, or pages with strict Content Security Policies.
 
+**Note:** Frag currently only supports hex-based tokens (characters `0-9`, `a-f`).
+
 ## How it works
 
 1. **Fragment exfiltration** — CSS attribute selectors (`^=`, `*=`, `$=`) match overlapping chunks of a token embedded in an element's attribute. Each matching selector triggers a `background-image` request to your server, revealing which chunk was present.
