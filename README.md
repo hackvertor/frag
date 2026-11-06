@@ -4,9 +4,9 @@
 
 <p align="center"><em>CSS token exfiltration tool</em></p>
 
-## What is frag?
+## What is Frag?
 
-frag is a tool for extracting secret tokens from web pages using only CSS — no JavaScript required. It generates CSS payloads that use attribute selectors and `background-image` URLs to exfiltrate overlapping token fragments to an attacker-controlled server, then reconstructs the full token using De Bruijn graph traversal and Eulerian path algorithms.
+Frag is a tool for extracting secret tokens from web pages using only CSS — no JavaScript required. It generates CSS payloads that use attribute selectors and `background-image` URLs to exfiltrate overlapping token fragments to an attacker-controlled server, then reconstructs the full token using De Bruijn graph traversal and Eulerian path algorithms.
 
 This is useful in contexts where CSS injection is possible but JavaScript is blocked — such as webmail clients, HTML email rendering, or pages with strict Content Security Policies.
 
@@ -14,7 +14,7 @@ This is useful in contexts where CSS injection is possible but JavaScript is blo
 
 1. **Fragment exfiltration** — CSS attribute selectors (`^=`, `*=`, `$=`) match overlapping chunks of a token embedded in an element's attribute. Each matching selector triggers a `background-image` request to your server, revealing which chunk was present.
 
-2. **Graph reconstruction** — The received chunks are modelled as edges in a De Bruijn graph. frag finds an Eulerian path through the graph to reconstruct the original token, using the Chinese Postman Problem for handling repeated chunks.
+2. **Graph reconstruction** — The received chunks are modelled as edges in a De Bruijn graph. Frag finds an Eulerian path through the graph to reconstruct the original token, using the Chinese Postman Problem for handling repeated chunks.
 
 3. **Noise removal** — Chunks that come from known parts of the URL (not the token itself) are identified and filtered out using context-based analysis.
 
