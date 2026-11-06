@@ -14,13 +14,26 @@ This is useful in contexts where CSS injection is possible but JavaScript is blo
 
 ## How it works
 
-1. **Fragment exfiltration** — CSS attribute selectors (`^=`, `*=`, `$=`) match overlapping chunks of a token embedded in an element's attribute. Each matching selector triggers a `background-image` request to your server, revealing which chunk was present.
+1. **Fragment exfiltration** — For every possible hex window of 3 or 4 characters, a CSS attribute selector (`*=`) fires a `background-image` request to your server if the token's attribute contains it. Two small rule sets (`^=`/`$=`, or `*=` with the known surrounding text) leak the token's first and last two characters.
 
-2. **Graph reconstruction** — The received chunks are modelled as edges in a De Bruijn graph. Frag searches for every walk of exactly the configured token length that starts with the leaked start chunk, ends with the leaked end chunk, and uses only leaked chunks.
+2. **Reconstruction** — Frag builds the token one character at a time, keeping only tokens of the configured length that match the leaked start and end and contain nothing but leaked windows.
 
-3. **Noise handling** — Hex from the rest of the attribute (e.g. `bac` in `callback`, or junk query parameters) also leaks as chunks and can link into the token's graph. Walks are ranked by how cheaply the chunks they leave unused can be explained as one contiguous run of junk, so junk is left over rather than spliced into the token. Chunks from the known start/end context are always free to leave over.
+3. **Noise handling** — Hex from the rest of the attribute (e.g. `bac` in `callback`, or junk query parameters) also leaks and can link into the token. Candidates are ranked by how cheaply the windows they leave unused can be explained as one contiguous run of junk, so junk is left over rather than spliced into the token.
 
-4. **Ambiguity reporting** — Only the *set* of chunks leaks, not their order or count, so different tokens can leak identical data (e.g. when a 2-character pair appears three times). When that happens every equally plausible token is listed as a candidate rather than one being picked at random. With 3-character windows about 45% of random 40-char hex tokens are ambiguous (usually 2–4 candidates); beyond ~64 chars most are, and the candidate list is capped and marked truncated.
+4. **Ambiguity reporting** — Only the *set* of windows leaks, not their order or count, so different tokens can leak identical data. When that happens every equally plausible token is listed as a candidate rather than one being picked at random.
+
+### Window size
+
+The window size trades CSS size against accuracy. Measured on random hex tokens in an anchor href followed by random hex junk:
+
+| Window | CSS | Single correct guess, 12 chars | 24 chars | 40 chars | 64 chars |
+|---|---|---|---|---|---|
+| 4 chars (default) | ~4.5 MB | 100% | 100% | 99.5% | ~97% |
+| 3 chars | ~300 KB | ~97% | ~72% | ~28% | ~1% |
+
+With 3-char windows the real token is still in the candidate list ~98% of the time at 40 chars; it just isn't the only answer. CSS size also grows with the length of your server's origin, since it appears in every rule.
+
+Chrome crashes the tab when a single element has tens of thousands of background layers (65k crashed, 32k was fine), so the 4-char payload spreads its layers across the element and its `::before`/`::after`.
 
 The server waits until requests have stopped arriving for a second before stitching, so a poll mid-burst can't lock in a reconstruction from partial data.
 
@@ -53,7 +66,8 @@ Use the web UI to configure:
 | **name** | Display name for the token |
 | **start** | Known text immediately before the token |
 | **end** | Known text immediately after the token |
-| **length** | Expected token length (improves stitching accuracy) |
+| **length** | Expected token length |
+| **window** | 4 chars (~99% accurate, ~4.5 MB) or 3 chars (~300 KB, longer tokens may give candidates) |
 
 ### Testing
 

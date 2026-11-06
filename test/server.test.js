@@ -41,7 +41,7 @@ async function configure(user) {
   return parsePayload(generateCSS(config, base));
 }
 
-const send = ({ t, c }) => fetch(`${base}/log?c=${c}&t=${t}`).then(r => r.arrayBuffer());
+const send = ({ t, c }) => fetch(`${base}/${t === 'm' ? '' : t + '/'}${c}`).then(r => r.arrayBuffer());
 const token = () => fetch(base + '/api/token').then(r => r.json());
 
 async function extract(rules, value, order) {
@@ -54,8 +54,8 @@ async function extract(rules, value, order) {
 
 test('anchor with random hex junk, start first', async () => {
   const r = rng(SEED + 10);
-  for (const length of [8, 17, 32, 40]) {
-    const rules = await configure({ ...PRESETS.anchor, tokenLength: length });
+  for (const [length, windowSize] of [[8, 3], [17, 4], [32, 3], [40, 4]]) {
+    const rules = await configure({ ...PRESETS.anchor, tokenLength: length, windowSize });
     const secret = r.hex(length);
     const value = 'https://example.com/m/callback/email?token=' + secret +
       '&operation=login&state=medium&rememberMe=false&x=' + r.hex(r.int(4, 40));

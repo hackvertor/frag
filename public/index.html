@@ -189,6 +189,13 @@
       <span class="config-label">length</span>
       <input type="number" id="cfgLength" class="config-input short" min="1">
     </div>
+    <div class="config-row">
+      <span class="config-label">window</span>
+      <select id="cfgWindow" class="config-input">
+        <option value="4">4 chars &mdash; ~99% single guess at 40 chars, ~4.5 MB CSS</option>
+        <option value="3">3 chars &mdash; ~300 KB CSS, longer tokens may give candidates</option>
+      </select>
+    </div>
     <div style="margin-top:12px" class="actions">
       <button class="btn" id="applyBtn">apply</button>
       <span class="status" id="applyStatus"></span>
@@ -239,6 +246,7 @@ const PRESETS = {
     startSelector: 'token=',
     endSelector: '&operation=login',
     tokenLength: 40,
+    windowSize: 4,
   },
   hidden: {
     selector: 'input[type="hidden"][name="csrf"]',
@@ -247,6 +255,7 @@ const PRESETS = {
     startSelector: '',
     endSelector: '',
     tokenLength: 40,
+    windowSize: 4,
   },
 };
 
@@ -264,20 +273,7 @@ function loadPreset(type) {
   document.getElementById('cfgStart').value = preset.startSelector;
   document.getElementById('cfgEnd').value = preset.endSelector;
   document.getElementById('cfgLength').value = preset.tokenLength;
-}
-
-function loadConfigToForm(cfg) {
-  document.getElementById('cfgSelector').value = cfg.selector;
-  document.getElementById('cfgAttr').value = cfg.attribute;
-  document.getElementById('cfgToken').value = cfg.tokenName;
-  document.getElementById('cfgStart').value = cfg.startContext ? cfg.startContext.slice(0, -2) : '';
-  document.getElementById('cfgLength').value = cfg.tokenLength;
-
-  if (cfg.tag === 'input') {
-    document.getElementById('cfgType').value = 'hidden';
-  } else {
-    document.getElementById('cfgType').value = 'anchor';
-  }
+  document.getElementById('cfgWindow').value = preset.windowSize;
 }
 
 async function applyConfig() {
@@ -288,6 +284,7 @@ async function applyConfig() {
     startSelector: document.getElementById('cfgStart').value,
     endSelector: document.getElementById('cfgEnd').value,
     tokenLength: parseInt(document.getElementById('cfgLength').value, 10) || 40,
+    windowSize: parseInt(document.getElementById('cfgWindow').value, 10),
   };
 
   const status = document.getElementById('applyStatus');
@@ -354,6 +351,7 @@ async function init() {
   document.getElementById('cfgAttr').value = CONFIG.attribute;
   document.getElementById('cfgToken').value = CONFIG.tokenName;
   document.getElementById('cfgLength').value = CONFIG.tokenLength || 40;
+  document.getElementById('cfgWindow').value = CONFIG.windowSize;
   if (CONFIG.tag === 'input') {
     document.getElementById('cfgType').value = 'hidden';
   }
@@ -393,7 +391,7 @@ async function init() {
       } else {
         await navigator.clipboard.writeText(css);
       }
-      status.textContent = 'copied';
+      status.textContent = 'copied (' + (css.length / 1024 / 1024).toFixed(2) + ' MB)';
       status.className = 'status ok';
     } catch (e) {
       status.textContent = 'clipboard failed';
