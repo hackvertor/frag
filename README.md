@@ -14,13 +14,28 @@ This is useful in contexts where CSS injection is possible but JavaScript is blo
 
 ## How it works
 
-1. **Fragment exfiltration** — CSS attribute selectors (`^=`, `*=`, `$=`) match overlapping chunks of a token embedded in an element's attribute. Each matching selector triggers a `background-image` request to your server, revealing which chunk was present.
+1. **Fragment exfiltration** — For every possible hex window of 3 or 4 characters, a CSS attribute selector (`*=`) fires a `background-image` request to your server if the token's attribute contains it. Two small rule sets (`^=`/`$=`, or `*=` with the known surrounding text) leak the token's first and last two characters.
 
-2. **Graph reconstruction** — The received chunks are modelled as edges in a De Bruijn graph. Frag finds an Eulerian path through the graph to reconstruct the original token, using the Chinese Postman Problem for handling repeated chunks.
+2. **Reconstruction** — Frag builds the token one character at a time, keeping only tokens of the configured length that match the leaked start and end and contain nothing but leaked windows.
 
-3. **Noise removal** — Chunks that come from known parts of the URL (not the token itself) are identified and filtered out using context-based analysis.
+3. **Noise handling** — Hex from the rest of the attribute (e.g. `bac` in `callback`, or junk query parameters) also leaks and can link into the token. Candidates are ranked by how cheaply the windows they leave unused can be explained as one contiguous run of junk, so junk is left over rather than spliced into the token.
 
-4. **Token length filtering** — A known token length is used to reject incorrect reconstructions and filter self-loop candidates.
+4. **Ambiguity reporting** — Only the *set* of windows leaks, not their order or count, so different tokens can leak identical data. When that happens every equally plausible token is listed as a candidate rather than one being picked at random.
+
+### Window size
+
+The window size trades CSS size against accuracy. Measured on random hex tokens in an anchor href followed by random hex junk:
+
+| Window | CSS | Single correct guess, 12 chars | 24 chars | 40 chars | 64 chars |
+|---|---|---|---|---|---|
+| 4 chars (default) | ~4.5 MB | 100% | 100% | 99.5% | ~97% |
+| 3 chars | ~300 KB | ~97% | ~72% | ~28% | ~1% |
+
+With 3-char windows the real token is still in the candidate list ~98% of the time at 40 chars; it just isn't the only answer. CSS size also grows with the length of your server's origin, since it appears in every rule.
+
+Chrome crashes the tab when a single element has tens of thousands of background layers (65k crashed, 32k was fine), so the 4-char payload spreads its layers across the element and its `::before`/`::after`. This has two side effects on the target page: any existing `::before`/`::after` content on that element is replaced, and if the page's own styles win the cascade for those pseudo-elements' `background`, the windows assigned to them won't leak and extraction fails. The 3-char payload uses only the element itself.
+
+The server treats a quiet gap of one second as the boundary between extractions: it waits for that gap before stitching, so a poll mid-burst can't lock in a reconstruction from partial data, and the first request after a gap starts a fresh extraction.
 
 ## Features
 
@@ -28,7 +43,7 @@ This is useful in contexts where CSS injection is possible but JavaScript is blo
 - Support for anchor elements (`<a href="...">`) and hidden inputs (`<input type="hidden">`)
 - Two copy modes: HTML (for pasting into contenteditable test pages) and plain text (for exploitation)
 - Sample token with test HTML for verifying payloads in-browser
-- Real-time stitching as chunks arrive
+- Automatic stitching once a burst of requests has finished
 
 ## Getting started
 
@@ -51,7 +66,16 @@ Use the web UI to configure:
 | **name** | Display name for the token |
 | **start** | Known text immediately before the token |
 | **end** | Known text immediately after the token |
-| **length** | Expected token length (improves stitching accuracy) |
+| **length** | Expected token length |
+| **window** | 4 chars (~99% accurate, ~4.5 MB) or 3 chars (~300 KB, longer tokens may give candidates) |
+
+### Testing
+
+```bash
+npm test
+```
+
+The tests generate random hex tokens of every length from 6 to 40, embed them in anchors (with and without random hex junk on the end of the href) and hidden inputs, work out which requests the real CSS payload (`public/payload.js`) would trigger, and check the stitched result. Runs are seeded; use `FRAG_SEED=<n> npm test` to try a different set of tokens.
 
 ### Usage
 

