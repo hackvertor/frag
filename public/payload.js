@@ -79,7 +79,7 @@
     return `<style>${selector}{${rules.join('')}${body}}</style>`;
   }
 
-  const api = { ANCHOR_LENGTH, shortName, generateCSS };
+  const api = { HEX, ANCHOR_LENGTH, MAX_LAYERS_PER_BOX, PSEUDO_BOXES, shortName, allHex, generateCSS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else Object.assign(root, api);
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -143,3 +143,87 @@ test('leak routes only accept the lengths the payload uses', async () => {
     assert.equal(res.status, 200, path);
   }
 });
+
+// --- blind mode ----------------------------------------------------------------
+
+const B = require('../public/blind');
+const { el, page, requests } = require('./blind-helpers');
+
+const getJson = path => fetch(base + path).then(r => r.json());
+const postJson = (path, body) => fetch(base + path, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+});
+const hit = path => fetch(`${base}/${path}`).then(r => r.arrayBuffer());
+
+test('blind: recon then extract over HTTP, with unknown lengths', async () => {
+  await getJson('/api/blind/reset');
+  const r = rng(SEED + 20);
+  const csrf = r.hex(40);
+  const code = r.hex(32);
+  const form = el('form', {});
+  const doc = page([
+    form,
+    el('input', { type: 'hidden', name: 'csrf', value: csrf }, { form }),
+    el('input', { type: 'hidden', name: 'lang', value: 'en' }, { form }),
+    el('a', { href: `/verify?code=${code}&next=home` }),
+  ]);
+
+  for (const p of r.shuffle([...requests(doc, B.reconPayload())])) await hit(p);
+  assert.equal((await getJson('/api/recon')).status, 'partial', 'must wait for the burst to end');
+  await sleep(SETTLE_MS + 50);
+  const found = await getJson('/api/recon');
+  assert.equal(found.status, 'ok');
+  assert.deepEqual(found.fields, [
+    { kind: 'input', name: 'csrf', host: 'form', hex: true },
+    { kind: 'a', name: 'code', host: 'self', hex: null },
+  ]);
+  assert.equal(found.unlistedInputs, true);
+
+  const res = await postJson('/api/blind', { fields: found.fields.map(f => ({ ...f, windowSize: 4 })) });
+  assert.equal(res.status, 200);
+  const { fields } = await res.json();
+  assert.equal(fields.length, 2);
+  assert.equal(fields[1].id, fields[0].id + 1);
+
+  for (const p of r.shuffle([...requests(doc, B.extractPayload(fields))])) await hit(p);
+  assert.equal((await getJson('/api/blind/tokens')).status, 'partial');
+  await sleep(SETTLE_MS + 50);
+  const tokens = await getJson('/api/blind/tokens');
+  assert.equal(tokens.status, 'ok');
+  assert.equal(tokens.results[0].token, csrf, JSON.stringify(tokens.results[0]));
+  assert.ok(listed(tokens.results[1], code), JSON.stringify(tokens.results[1]));
+});
+
+test('blind: each configuration gets fresh field ids, so payload URLs never repeat', async () => {
+  const configure = async () => (await (await postJson('/api/blind', {
+    fields: [{ kind: 'meta', name: 'csrf-token', host: 'self', windowSize: 3 }],
+  })).json()).fields[0].id;
+  const first = await configure();
+  const second = await configure();
+  assert.notEqual(first, second);
+  assert.equal((await fetch(`${base}/b/${first}/abc`)).status, 404, 'old ids stop recording');
+});
+
+test('blind: only wordlist fields and known routes are accepted', async () => {
+  for (const fields of [
+    [],
+    [{ kind: 'input', name: 'not-in-wordlist', host: 'form' }],
+    [{ kind: 'meta', name: 'csrf-token', host: 'form' }],
+    [{ kind: 'script', name: 'csrf', host: 'self' }],
+  ]) {
+    const res = await postJson('/api/blind', { fields });
+    assert.equal(res.status, 400, JSON.stringify(fields));
+  }
+  const res = await postJson('/api/blind', { fields: [{ kind: 'input', name: 'csrf', host: 'form', windowSize: 3 }] });
+  const id = (await res.json()).fields[0].id;
+  for (const path of ['/r/i/not-in-wordlist', '/r/zz/csrf', `/b/${id + 1}/abc`, `/b/${id}/abcd`, `/b/${id}/s/abc`, `/b/${id}/x/ab`]) {
+    const res = await fetch(base + path);
+    assert.equal(res.status, 404, path);
+  }
+  for (const path of ['/r/i/csrf', `/b/${id}/abc`, `/b/${id}/s/ab`, '/blind.js']) {
+    const res = await fetch(base + path);
+    assert.equal(res.status, 200, path);
+  }
+});
