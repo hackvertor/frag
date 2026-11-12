@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
 const { tryStitch } = require('./lib/stitch');
+const { mountBlind } = require('./lib/blind-server');
 const { ANCHOR_LENGTH } = require('./public/payload');
 
 const G = '\x1b[32m';
@@ -210,6 +211,7 @@ const anchor = `[0-9a-f]{${ANCHOR_LENGTH}}`;
 app.get(`/s/:c(${anchor})`, (req, res) => record('s', req.params.c, res));
 app.get(`/e/:c(${anchor})`, (req, res) => record('e', req.params.c, res));
 app.get('/:c([0-9a-f]{3,4})', (req, res) => record('m', req.params.c, res));
+mountBlind(app, { settleMs: SETTLE_MS, pixel: PIXEL });
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/graphics', express.static(path.join(__dirname, 'graphics')));

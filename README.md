@@ -37,6 +37,55 @@ Chrome crashes the tab when a single element has tens of thousands of background
 
 The server treats a quiet gap of one second as the boundary between extractions: it waits for that gap before stitching, so a poll mid-burst can't lock in a reconstruction from partial data, and the first request after a gap starts a fresh extraction.
 
+## Blind mode
+
+Blind mode extracts tokens from a page you don't have selectors for. It only uses `background-image` requests, so it works where `@import` is blocked. Without `@import` there's no recursion: each injection is one static stylesheet. So blind mode runs in two stages.
+
+1. **Recon** (~200 KB). Wordlist probes report:
+   - which fields exist: hidden/other inputs by `name`, `<meta name>`, `?name=` params in `a[href]` and `form[action]`, and `data-*` attributes
+   - which element can host the extraction requests
+   - whether each value is lowercase hex
+
+   CSS can't enumerate attribute names or read values, so names can only come from the wordlists in `public/blind.js`. A hidden input whose name isn't listed is flagged but can't be extracted.
+
+2. **Extract**. Pick fields from the recon results and frag builds a payload for them. It's like targeted mode, but every URL is namespaced by field (`/b/<id>/abcd`). That's because the browser only loads an identical URL once, so windows from different fields would otherwise be indistinguishable. The token length isn't known, so the solver tries a range of lengths:
+   - **Whole values** (input, meta, data-\*): the shortest token that uses every leaked window.
+   - **URL params**: candidates are ranked by how many characters they need for the token plus the junk around it. These payloads also leak where each param value starts (`=ab`) and every possible end (`ab&`, `ab#`, end of URL). Leftovers that start or end mid-value then count against a candidate.
+
+Usage: switch the UI to **blind**, copy the recon payload, inject it, then pick the discovered fields, copy the extract payload and inject that. The test area has a sample page with one field of each kind.
+
+### Hosts
+
+Hidden inputs and `<meta>` don't render, so their requests need another element:
+
+| Field | Host | Notes |
+|---|---|---|
+| input in a rendered form | `form:has(>input[name=… i][value*=…])` | Fast (~0.1 s for 65k rules) |
+| other inputs | `html:has(input[…])` | Cost grows with page size (~3 s for 4-char windows on a 3,000-element page) |
+| meta | the meta itself, with `head,meta{display:block}` | |
+| `a`/`form` params, `data-*` | the element itself | |
+
+Recon checks the form host by firing its probe *from* the form, so a `display:none` form isn't used. Each kind of host is one element plus its `::before`/`::after`. That holds one 4-char field or about 16 3-char fields. When a kind is full, inputs and data attributes fall back to `html`, and if nothing fits frag asks you to use 3-char windows or a separate pass. Hosts replace the background, and `::before`/`::after`, of the elements they're on.
+
+### Accuracy and size
+
+Measured with random hex tokens and unknown length (`test/blind.test.js`). The URL-param case has random hex junk params before and after the token.
+
+| Field | Window | CSS per field | Single correct guess | Token listed |
+|---|---|---|---|---|
+| input / meta / data | 4 chars | ~6–7 MB | ~95% (6–64 chars) | 100% |
+| input / meta / data | 3 chars | ~0.4–0.5 MB | ~60% (6–40 chars) | ~99% |
+| URL param with junk | 4 chars | ~6 MB | ~70% (8–64 chars) | 100% |
+| URL param with junk | 3 chars | ~0.5 MB | rare | ~85% (8–24 chars) |
+
+A whole value that repeats a substring (e.g. `fffff`) leaks the same windows as one with fewer repeats, so every length that fits is listed, shortest first. URL params are ambiguous more often because a chance overlap can let the token's tail swap with a junk param's. Both splits then fit the leaked data equally well, so both are listed.
+
+### Chrome behaviour this relies on
+
+- A stylesheet with more than 2^18 (262,144) rules is silently ignored, so payloads with several 4-char fields are split over multiple `<style>` elements.
+- Chrome takes ~7 s to build a sheet with tens of thousands of top-level attribute selectors such as `a[href*="abcd"]`, even if none match. Wrapped in `:is()` (`a:is([href*="abcd"])`), the same rules take ~0.1 s, so blind payloads keep their attribute tests inside `:is()`. The targeted payload doesn't do this yet.
+- Sibling hosts (`input[…] ~ *`) put every rule in Chrome's universal bucket and hung the tab on a 3,000-element page. Blind mode doesn't use them.
+
 ## Features
 
 - Web UI for configuration, payload generation, and live token display
@@ -44,6 +93,7 @@ The server treats a quiet gap of one second as the boundary between extractions:
 - Two copy modes: HTML (for pasting into contenteditable test pages) and plain text (for exploitation)
 - Sample token with test HTML for verifying payloads in-browser
 - Automatic stitching once a burst of requests has finished
+- Blind mode: discovers fields from wordlists and extracts tokens of unknown length without selectors
 
 ## Getting started
 
@@ -75,7 +125,7 @@ Use the web UI to configure:
 npm test
 ```
 
-The tests generate random hex tokens of every length from 6 to 40, embed them in anchors (with and without random hex junk on the end of the href) and hidden inputs, work out which requests the real CSS payload (`public/payload.js`) would trigger, and check the stitched result. Runs are seeded; use `FRAG_SEED=<n> npm test` to try a different set of tokens.
+The tests generate random hex tokens of every length from 6 to 40, embed them in anchors (with and without random hex junk on the end of the href) and hidden inputs, work out which requests the real CSS payload (`public/payload.js`) would trigger, and check the stitched result. `test/blind.test.js` does the same for blind mode. It evaluates the recon and extract rules against a small model of a page (`test/blind-helpers.js`), from the same rule data the CSS is rendered from. Runs are seeded; use `FRAG_SEED=<n> npm test` to try a different set of tokens.
 
 ### Usage
 
