@@ -439,7 +439,7 @@ async function init() {
   testArea.addEventListener('paste', (e) => {
     e.preventDefault();
     const html = e.clipboardData.getData('text/html') || e.clipboardData.getData('text/plain');
-    testArea.innerHTML = html + (MODE === 'blind' ? BLIND_SAMPLE.html : CONFIG.sampleHtml);
+    testArea.innerHTML = html + (MODE === 'blind' ? BLIND_SAMPLE.html : (CONFIG ? CONFIG.sampleHtml : ''));
   });
 
   document.getElementById('cfgType').addEventListener('change', (e) => {
@@ -476,8 +476,9 @@ async function init() {
     document.getElementById('statusDot').className = 'indicator';
   });
 
-  // Keep polling so later extractions (after reset or a new config) show up.
-  setInterval(checkToken, 2000);
+  // Keep polling so later extractions (after reset or a new config) show up,
+  // but only while targeted mode is showing (blind mode has its own poll).
+  setInterval(() => { if (MODE === 'targeted') checkToken(); }, 2000);
 }
 
 // --- blind mode ---------------------------------------------------------------
@@ -512,7 +513,8 @@ function setMode(mode) {
   document.querySelectorAll('.blind-only').forEach(e => e.classList.toggle('hidden-mode', mode !== 'blind'));
   document.getElementById('modeTargeted').className = 'btn' + (mode === 'targeted' ? '' : ' btn-outline');
   document.getElementById('modeBlind').className = 'btn' + (mode === 'blind' ? '' : ' btn-outline');
-  document.getElementById('testArea').innerHTML = mode === 'blind' ? BLIND_SAMPLE.html : CONFIG.sampleHtml;
+  // CONFIG can be null if the initial /config fetch failed; don't crash the switch.
+  document.getElementById('testArea').innerHTML = mode === 'blind' ? BLIND_SAMPLE.html : (CONFIG ? CONFIG.sampleHtml : '');
 }
 
 async function copyPayload(css, mode, statusEl) {
