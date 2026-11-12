@@ -206,6 +206,15 @@ test('blind: each configuration gets fresh field ids, so payload URLs never repe
   assert.equal((await fetch(`${base}/b/${first}/abc`)).status, 404, 'old ids stop recording');
 });
 
+test('blind: reset drops field configs so old extract hits stop recording', async () => {
+  const id = (await (await postJson('/api/blind', {
+    fields: [{ kind: 'meta', name: 'csrf-token', host: 'self', windowSize: 3 }],
+  })).json()).fields[0].id;
+  assert.equal((await fetch(`${base}/b/${id}/abc`)).status, 200, 'id records before reset');
+  await getJson('/api/blind/reset');
+  assert.equal((await fetch(`${base}/b/${id}/abc`)).status, 404, 'id stops recording after reset');
+});
+
 test('blind: only wordlist fields and known routes are accepted', async () => {
   for (const fields of [
     [],
