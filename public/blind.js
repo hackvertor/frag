@@ -94,6 +94,18 @@
     iu: ['x'], // a hidden input whose name isn't in INPUT_NAMES exists
   };
 
+  // The extractable field kinds (the `kind` on a discovered field), each with
+  // its wordlist, the hosts fieldsFromRecon/assignHosts can assign it, and
+  // whether the whole attribute is the value. Single source of truth: the
+  // server validates incoming fields against this.
+  const FIELD_KINDS = {
+    input: { names: INPUT_NAMES, hosts: ['form', 'html'], whole: true },
+    meta: { names: META_NAMES, hosts: ['self'], whole: true },
+    data: { names: DATA_ATTRS, hosts: ['self', 'html'], whole: true },
+    a: { names: URL_PARAMS, hosts: ['self'], whole: false },
+    form: { names: URL_PARAMS, hosts: ['self'], whole: false },
+  };
+
   // A value is lowercase hex if it's non-empty and contains none of these.
   // `i` makes g-z cover G-Z too; A-F need their own case-sensitive tests.
   const NON_HEX = [
@@ -287,14 +299,17 @@
   // How each kind of field is matched, which attribute holds the value, and
   // whether the whole attribute is the value (else it's a URL parameter).
   function fieldTarget(field) {
+    const kind = FIELD_KINDS[field.kind];
+    if (!kind) throw new Error('unknown field kind ' + field.kind);
+    const whole = kind.whole;
     switch (field.kind) {
-      case 'input': return { match: inputMatch(field.name), attr: 'value', whole: true };
-      case 'meta': return { match: metaMatch(field.name), attr: 'content', whole: true };
-      case 'data': return { match: dataMatch(field.name), attr: field.name, whole: true };
+      case 'input': return { match: inputMatch(field.name), attr: 'value', whole };
+      case 'meta': return { match: metaMatch(field.name), attr: 'content', whole };
+      case 'data': return { match: dataMatch(field.name), attr: field.name, whole };
       // The window rules only need a cheap "has name=" test (the start rules
       // pin down ?name= / &name= themselves), which saves ~50 bytes a rule.
-      case 'a': return { match: { tag: 'a', attrs: [['href', '*=', field.name + '=', true]] }, attr: 'href', whole: false };
-      case 'form': return { match: { tag: 'form', attrs: [['action', '*=', field.name + '=', true]] }, attr: 'action', whole: false };
+      case 'a': return { match: { tag: 'a', attrs: [['href', '*=', field.name + '=', true]] }, attr: 'href', whole };
+      case 'form': return { match: { tag: 'form', attrs: [['action', '*=', field.name + '=', true]] }, attr: 'action', whole };
       default: throw new Error('unknown field kind ' + field.kind);
     }
   }
@@ -417,7 +432,7 @@
   const generateBlindCSS = (fields, server) => render(extractPayload(fields), server);
 
   const api = {
-    INPUT_NAMES, META_NAMES, URL_PARAMS, DATA_ATTRS, RECON_KINDS, TARGETS,
+    INPUT_NAMES, META_NAMES, URL_PARAMS, DATA_ATTRS, RECON_KINDS, FIELD_KINDS, TARGETS,
     renderMatch, render, reconPayload, generateReconCSS, fieldsFromRecon,
     fieldTarget, assignHosts, extractPayload, generateBlindCSS,
   };
