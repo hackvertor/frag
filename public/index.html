@@ -317,6 +317,11 @@ let CONFIG = null;
 // on every field change, so copy/generate must wait for an in-flight apply to
 // land before reading CONFIG, or they'd build a payload from the old config.
 let applyPromise = Promise.resolve();
+// Rapid edits put several /api/config requests in flight at once; if an older
+// one resolves last it must not overwrite CONFIG (or the status) with a
+// superseded config. Only the latest apply, identified by this sequence
+// number, is allowed to write.
+let applySeq = 0;
 
 const PRESETS = {
   anchor: {
@@ -377,6 +382,7 @@ function applyConfig() {
     hostMode: document.getElementById('cfgHost').value,
   };
 
+  const seq = ++applySeq;
   const status = document.getElementById('applyStatus');
   status.textContent = 'applying...';
   status.className = 'status';
@@ -387,7 +393,9 @@ function applyConfig() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      CONFIG = await res.json();
+      const cfg = await res.json();
+      if (seq !== applySeq) return;        // a newer apply has superseded this one
+      CONFIG = cfg;
       document.getElementById('sampleToken').textContent = CONFIG.sampleToken;
       document.getElementById('testArea').innerHTML = CONFIG.sampleHtml;
       document.getElementById('extractedToken').textContent = 'waiting for extraction...';
@@ -396,10 +404,15 @@ function applyConfig() {
       status.textContent = 'applied';
       status.className = 'status ok';
     } catch (e) {
+      if (seq !== applySeq) return;
       status.textContent = 'failed';
       status.className = 'status';
     }
-    setTimeout(() => { status.textContent = 'changes apply automatically'; status.className = 'status'; }, 1500);
+    setTimeout(() => {
+      if (seq !== applySeq) return;        // don't clobber a newer apply's status
+      status.textContent = 'changes apply automatically';
+      status.className = 'status';
+    }, 1500);
   })();
   return applyPromise;
 }
