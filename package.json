@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "test": "node --test 'test/*.test.js'"
+    "test": "node --test 'test/*.test.js'",
+    "test:browser": "node test/browser.js"
   },
   "dependencies": {
     "express": "^4.21.0"

