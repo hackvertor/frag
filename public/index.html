@@ -215,6 +215,13 @@
         <option value="3">3 chars &mdash; ~300 KB CSS, longer tokens may give candidates</option>
       </select>
     </div>
+    <div class="config-row" id="cfgHostRow">
+      <span class="config-label">host</span>
+      <select id="cfgHost" class="config-input">
+        <option value="sibling">next sibling (+) &mdash; smaller, breaks on a hidden sibling</option>
+        <option value="has">html:has() &mdash; robust to a hidden sibling, adds a :has() test per rule</option>
+      </select>
+    </div>
     <div style="margin-top:12px" class="actions">
       <button class="btn" id="applyBtn">apply</button>
       <span class="status" id="applyStatus"></span>
@@ -326,12 +333,19 @@ const PRESETS = {
     endSelector: '',
     tokenLength: 40,
     windowSize: 4,
+    hostMode: 'sibling',
   },
 };
 
 async function copyAsHtml(html) {
   const blob = new Blob([html], { type: 'text/html' });
   await navigator.clipboard.write([new ClipboardItem({ 'text/html': blob })]);
+}
+
+// The host option only applies to hidden inputs (anchors render themselves).
+function updateHostRow() {
+  const isInput = document.getElementById('cfgType').value === 'hidden';
+  document.getElementById('cfgHostRow').style.display = isInput ? '' : 'none';
 }
 
 function loadPreset(type) {
@@ -344,6 +358,8 @@ function loadPreset(type) {
   document.getElementById('cfgEnd').value = preset.endSelector;
   document.getElementById('cfgLength').value = preset.tokenLength;
   document.getElementById('cfgWindow').value = preset.windowSize;
+  document.getElementById('cfgHost').value = preset.hostMode || 'sibling';
+  updateHostRow();
 }
 
 async function applyConfig() {
@@ -355,6 +371,7 @@ async function applyConfig() {
     endSelector: document.getElementById('cfgEnd').value,
     tokenLength: parseInt(document.getElementById('cfgLength').value, 10) || 40,
     windowSize: parseInt(document.getElementById('cfgWindow').value, 10),
+    hostMode: document.getElementById('cfgHost').value,
   };
 
   const status = document.getElementById('applyStatus');
@@ -422,6 +439,8 @@ async function init() {
   if (CONFIG.tag === 'input') {
     document.getElementById('cfgType').value = 'hidden';
   }
+  document.getElementById('cfgHost').value = CONFIG.hostMode || 'sibling';
+  updateHostRow();
 
   // Reverse the start/end context to full selectors
   // startContext is last 2 chars of startSelector, but we need the full startSelector

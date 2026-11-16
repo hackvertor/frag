@@ -39,12 +39,23 @@
   function generateCSS(cfg, server) {
     const { selector, attribute, tag, startContext, endContext, useStartsWith, useEndsWith } = cfg;
     const windowSize = cfg.windowSize || 4;
-    // For hidden inputs the requests are made by the next sibling.
-    const target = tag === 'input' ? '+*' : '';
+    // A hidden input can't render its own background, so its requests need
+    // another element. Two ways to reach one:
+    //   sibling (default): the next sibling, via `&[...]+*`. Cheap, but breaks
+    //     if the input is followed by another non-rendering element.
+    //   :has(): the root, via `html:has(&[...])`. Immune to a hidden sibling,
+    //     at the cost of a `html:has()` test per rule.
+    // Anchors render themselves, so hostMode is ignored for them.
+    const useHas = tag === 'input' && cfg.hostMode === 'has';
+    // For hidden inputs in sibling mode the requests are made by the next sibling.
+    const target = !useHas && tag === 'input' ? '+*' : '';
     const rules = [];
     const layers = [];
-    const rule = (op, value, prop, path) =>
-      rules.push(`&[${attribute}${op}"${value}"]${target}{--${prop}:url(${server}/${path})}`);
+    const rule = (op, value, prop, path) => {
+      const match = `${attribute}${op}"${value}"`;
+      const subject = useHas ? `html:has(&[${match}])` : `&[${match}]${target}`;
+      rules.push(`${subject}{--${prop}:url(${server}/${path})}`);
+    };
 
     // Start/end props contain a hyphen, so they can never clash with a
     // shortName() (alphanumeric only) used for the window props.
@@ -69,12 +80,17 @@
     const all = ['var(--s-,none)', ...layers, 'var(--e-,none)'];
     const boxCount = Math.ceil(all.length / MAX_LAYERS_PER_BOX);
     const perBox = Math.ceil(all.length / boxCount);
-    const host = tag === 'input' ? '&+*' : '&';
+    // In :has() mode the root hosts the layers (html:has(&) is <html> whenever
+    // the input exists); otherwise the next sibling (input) or the element
+    // itself (anchor) does.
+    const host = useHas ? 'html:has(&)' : (tag === 'input' ? '&+*' : '&');
     let body = '';
     for (let i = 0; i < boxCount; i++) {
       const background = `background:${all.slice(i * perBox, (i + 1) * perBox).join(',')}`;
-      if (i === 0) body += tag === 'input' ? `${host}{display:inline-block;${background}}` : background + ';';
-      else body += `${host}${PSEUDO_BOXES[i - 1]}{content:"";display:inline-block;${background}}`;
+      if (i === 0) {
+        if (useHas) body += `${host}{${background}}`;
+        else body += tag === 'input' ? `${host}{display:inline-block;${background}}` : background + ';';
+      } else body += `${host}${PSEUDO_BOXES[i - 1]}{content:"";display:inline-block;${background}}`;
     }
     return `<style>${selector}{${rules.join('')}${body}}</style>`;
   }
