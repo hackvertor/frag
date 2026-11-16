@@ -58,17 +58,28 @@ Case ties (e.g. a lowercase copy of part of the token elsewhere in the attribute
 
 When testing in the UI, inject each payload into a fresh page: a browser won't re-request an image URL it already loaded in the same page, and alphanumeric, base64 and base64url share most window URLs.
 
-The targeted and advanced blind flows treat a quiet gap of one second as the boundary between extractions: the server waits for that gap before stitching, and the first request after it starts a fresh extraction. One-shot mode also waits for a quiet gap before stitching, but keeps hits across gaps so a delayed lane cannot erase an earlier one. Reset or reconfigure one-shot mode before a separate injection.
+The targeted mode and blind recon mode treat a quiet gap of one second as the boundary between extractions: the server waits for that gap before stitching, and the first request after it starts a fresh extraction. One-shot mode also waits for a quiet gap before stitching, but keeps hits across gaps so a delayed lane cannot erase an earlier one. Reset or reconfigure one-shot mode before a separate injection.
 
 ## Blind mode
 
-Blind mode extracts tokens from a page you don't have selectors for. It only uses `background-image` requests, so it works where `@import` is blocked. **One-shot mode** combines discovery and extraction probes in one static stylesheet: copy it, inject it once, and read the results. By default it searches hidden inputs with five common names (`csrf`, `csrf_token`, `token`, `authenticity_token`, `nonce`). You can enable meta tags, URL parameters and `data-*` attributes, choose up to eight names per kind from the built-in wordlists, and choose links, form actions or both for URLs. For URL parameters, select the likely charset and window size before copying. Input, meta and selected `data-*` values use one shared alphabet that covers hex, alphanumeric, base64 and base64url; discovery hits tell the solver which narrower charset to use.
+Blind mode extracts tokens from a page you don't have selectors for. It only uses `background-image` requests, so it works where `@import` is blocked. Without `@import` there's no recursion: each injection is one static stylesheet. Blind mode offers two methods, chosen with the **one-shot** / **recon (multi-step)** switch:
 
-The default one-shot payload is about 5.9 MB with a local collector. On Chrome 157, a test page with one hidden token and 600 ordinary rows (about 3,000 elements) took 4.6 seconds of style recalculation. Enabling more kinds adds substantial CSS and can take much longer on busy pages; a five-lane payload is roughly 33–35 MB, which may exceed an injection point's size limit. Each kind shares one extraction lane (`input`, `meta`, `a` URL parameter, `form` URL parameter and `data-*`). If more than one field name of the same kind is present, their fragments may mix, so Frag reports the names as a collision instead of assigning a token to the wrong field. Empty whole-value fields are ignored in this collision check. Multiple elements with the *same* name can still mix, as in the existing blind flow. URL parameter values cannot be classified by the discovery probes because the surrounding URL contains other characters, so choose their charset before injection; hex is the default. Names outside the selected shortlist require changing it or using the advanced flow. Hosts must render, and the shared hidden-input lane uses `html:has()`.
+| Method | Injections | Best for |
+|---|---|---|
+| One-shot | 1 | One field per kind from a shortlist of names; charsets of whole values detected automatically |
+| Recon (multi-step) | 2: discover, then extract | Several fields of the same kind, any wordlist name, per-field charsets, 4-char hex windows |
 
-One-shot whole-value extraction uses 3-character windows to keep the CSS manageable. This can leave long hex tokens ambiguous: in a review sample of 20 random 40-character hex values, only 4 yielded a single correct one-shot guess, although the correct value was among the candidates in all 20. The advanced flow can use 4-character hex windows when a more precise result is needed.
+### One-shot
 
-The advanced two-stage flow handles several fields of the same kind and lets you choose each field's charset individually:
+**One-shot mode** combines discovery and extraction probes in one static stylesheet: copy it, inject it once, and read the results. By default it searches hidden inputs with five common names (`csrf`, `csrf_token`, `token`, `authenticity_token`, `nonce`). You can enable meta tags, URL parameters and `data-*` attributes, choose up to eight names per kind from the built-in wordlists, and choose links, form actions or both for URLs. For URL parameters, select the likely charset and window size before copying. Input, meta and selected `data-*` values use one shared alphabet that covers hex, alphanumeric, base64 and base64url; discovery hits tell the solver which narrower charset to use.
+
+The default one-shot payload is about 5.9 MB with a local collector. On Chrome 157, a test page with one hidden token and 600 ordinary rows (about 3,000 elements) took 4.6 seconds of style recalculation. Enabling more kinds adds substantial CSS and can take much longer on busy pages; a five-lane payload is roughly 33–35 MB, which may exceed an injection point's size limit. Each kind shares one extraction lane (`input`, `meta`, `a` URL parameter, `form` URL parameter and `data-*`). If more than one field name of the same kind is present, their fragments may mix, so Frag reports the names as a collision instead of assigning a token to the wrong field. Empty whole-value fields are ignored in this collision check. Multiple elements with the *same* name can still mix, as in the existing blind flow. URL parameter values cannot be classified by the discovery probes because the surrounding URL contains other characters, so choose their charset before injection; hex is the default. Names outside the selected shortlist require changing it or using recon mode. Hosts must render, and the shared hidden-input lane uses `html:has()`.
+
+One-shot whole-value extraction uses 3-character windows to keep the CSS manageable. This can leave long hex tokens ambiguous: in a review sample of 20 random 40-character hex values, only 4 yielded a single correct one-shot guess, although the correct value was among the candidates in all 20. Recon mode can use 4-character hex windows when a more precise result is needed.
+
+### Recon (multi-step)
+
+Recon mode handles several fields of the same kind and lets you choose each field's charset individually:
 
 1. **Recon** (~129 KB). Wordlist probes report:
    - which fields exist: hidden/other inputs by `name`, `<meta name>`, `?name=` params in `a[href]` and `form[action]`, and `data-*` attributes
@@ -81,7 +92,7 @@ The advanced two-stage flow handles several fields of the same kind and lets you
    - **Whole values** (input, meta, data-\*): the shortest token that uses every leaked window.
    - **URL params**: candidates are ranked by how many characters they need for the token plus the junk around it. These payloads also leak where each param value starts (`=ab`) and every possible end (`ab&`, `ab#`, end of URL). Leftovers that start or end mid-value then count against a candidate.
 
-Usage: switch the UI to **blind** and copy the one-shot payload. The test area has a sample page with one field of each kind. Open **Advanced: separate discovery and extraction** when one-shot reports a collision or you need a field outside the shortlist.
+Usage: switch the UI to **blind** and pick a method. For **one-shot**, copy the one-shot payload and inject it. For **recon (multi-step)**, copy the recon payload and inject it (this starts a fresh recon), then pick the discovered fields, copy the extract payload and inject that. Switch to recon when one-shot reports a collision, or when you need a field outside the shortlist or 4-char hex windows. The test area has a sample page with one field of each kind.
 
 ### Hosts
 

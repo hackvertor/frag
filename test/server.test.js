@@ -394,6 +394,38 @@ test('blind: one-shot keeps early fields when a later lane crosses the settle ga
   assert.ok(listed(results[1], meta), JSON.stringify(results[1]));
 });
 
+test('blind: switching from one-shot to recon mode restores the multi-step flow', async () => {
+  // One-shot first: the server keeps hits across gaps in this mode.
+  await getJson('/api/blind/reset');
+  const cfg = { targets: ['input'], dataNames: [], urlCharset: 'hex', urlWindow: 4 };
+  assert.equal((await postJson('/api/blind/one-shot', cfg)).status, 200);
+  const stale = page([el('input', { type: 'hidden', name: 'nonce', value: 'deadbeefcafe' })]);
+  for (const p of requests(stale, B.reconPayload())) await hit(p);
+
+  // Copying the recon payload in the UI resets first, which leaves one-shot.
+  await getJson('/api/blind/reset');
+  const secret = 'Ab3d+fG/9JkL=N0pQrSt+vWx/z1234567=';
+  const form = el('form', {});
+  const doc = page([form, el('input', { type: 'hidden', name: 'csrf', value: secret }, { form })]);
+  for (const p of requests(doc, B.reconPayload())) await hit(p);
+  await sleep(SETTLE_MS + 50);
+  const found = await getJson('/api/recon');
+  assert.deepEqual(found.fields, [{ kind: 'input', name: 'csrf', host: 'form', charset: 'base64' }],
+    'only the new recon, nothing kept from the one-shot burst');
+  // Recon hits reset after a quiet gap again, as in the multi-step flow.
+  await sleep(SETTLE_MS + 50);
+  for (const p of requests(stale, B.reconPayload())) await hit(p);
+  await sleep(SETTLE_MS + 50);
+  assert.deepEqual((await getJson('/api/recon')).fields.map(f => f.name), ['nonce']);
+
+  const { fields } = await (await postJson('/api/blind', { fields: found.fields })).json();
+  for (const p of requests(doc, B.extractPayload(fields))) await hit(p);
+  await sleep(SETTLE_MS + 50);
+  const [result] = (await getJson('/api/blind/tokens')).results;
+  assert.equal(result.name, 'csrf');
+  assert.ok(listed(result, secret), JSON.stringify(result));
+});
+
 test('blind: one-shot reports mixed field names rather than misattributing a token', async () => {
   await getJson('/api/blind/reset');
   const cfg = { targets: ['input'], dataNames: [], urlCharset: 'hex', urlWindow: 4 };
