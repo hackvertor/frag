@@ -81,19 +81,19 @@ function requests(doc, payload) {
 const reconHits = paths =>
   new Set([...paths].filter(p => p.startsWith('r/')).map(p => p.slice(2)));
 
-// Split /b/<id>/... paths into per-field leak data.
+// Split /b/<id>/... paths into per-field leak data ("/" arrives as %2F).
 function fieldData(paths) {
   const fields = new Map();
   for (const p of paths) {
-    const m = p.match(/^b\/(\d+)\/(?:([ser])\/)?([0-9a-f]+)$/);
+    const m = p.match(/^b\/(\d+)\/(?:([serc])\/)?([\w+=%-]+)$/);
     if (!m) continue;
     const id = Number(m[1]);
-    if (!fields.has(id)) fields.set(id, { s: new Set(), e: new Set(), r: new Set(), m: new Set() });
-    fields.get(id)[m[2] || 'm'].add(m[3]);
+    if (!fields.has(id)) fields.set(id, { s: new Set(), e: new Set(), r: new Set(), m: new Set(), c: new Set() });
+    fields.get(id)[m[2] || 'm'].add(decodeURIComponent(m[3]));
   }
   const out = new Map();
   for (const [id, f] of fields) {
-    out.set(id, { starts: [...f.s], ends: [...f.e], runStarts: [...f.r], chunks: [...f.m] });
+    out.set(id, { starts: [...f.s], ends: [...f.e], runStarts: [...f.r], chunks: [...f.m], pairs: [...f.c] });
   }
   return out;
 }

