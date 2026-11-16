@@ -421,6 +421,24 @@ test('letter case is recovered from the case pairs', async t => {
     assert.deepEqual(assignCase([token.toLowerCase()], pairs, { context }).tokens, [token]);
   });
 
+  await t.test('many ambiguous letters: the cheapest casing is found, not cut off', () => {
+    // Context pairs make every letter's lowercase form valid too: 2^14
+    // consistent casings, and the real (all uppercase) one is the last a
+    // lowercase-first enumeration reaches. Only it uses every leaked pair.
+    const token = '1A2B3C4D5E6F7G8H9I0J1K2L3M4N';
+    const context = new Set(pairsOf(token.toLowerCase()));
+    const pairs = [...pairsOf(token), ...context];
+    assert.deepEqual(assignCase([token.toLowerCase()], pairs, { context }), { tokens: [token], truncated: false });
+  });
+
+  await t.test('more equally cheap casings than the list holds are truncated', () => {
+    // Without context, the lowercase copy makes all 2^14 casings tie.
+    const token = '1A2B3C4D5E6F7G8H9I0J1K2L3M4N';
+    const result = assignCase([token.toLowerCase()], [...pairsOf(token), ...pairsOf(token.toLowerCase())]);
+    assert.equal(result.tokens.length, 64);
+    assert.equal(result.truncated, true);
+  });
+
   await t.test('no consistent casing falls back to the lowercase token', () => {
     const data = { start: 'ab', end: 'ef', chunks: ['abc', 'bcd', 'cde', 'def'], pairs: ['aB'] };
     const result = stitchCharset(data, { charset: P.CHARSETS.alnum, windowSize: 3, tokenLength: 6 });
