@@ -93,6 +93,26 @@ test('hidden input, requests overtaking the start are kept', async () => {
   }
 });
 
+test('hidden input with html:has() host extracts the same as the sibling host', async () => {
+  const r = rng(SEED + 15);
+  for (const length of [12, 24, 40]) {
+    const css = generateCSS((await (await fetch(base + '/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...PRESETS.hidden, tokenLength: length, hostMode: 'has' }),
+    })).json()), base);
+    // The :has() payload reaches the root instead of the next sibling.
+    assert.match(css, /html:has\(&\[value/, 'rules should test html:has(&[value...])');
+    assert.ok(!css.includes('+*'), 'the :has() payload must not use the +* sibling host');
+    const rules = parsePayload(css);
+
+    const secret = r.hex(length);
+    const { final } = await extract(rules, secret, reqs => r.shuffle(reqs));
+    assert.equal(final.status, 'ok', JSON.stringify(final));
+    assert.ok(listed(final, secret), `${secret}: ${JSON.stringify(final)}`);
+  }
+});
+
 test('a later extraction does not inherit chunks from an earlier one', async () => {
   const r = rng(SEED + 12);
   const rules = await configure({ ...PRESETS.hidden, tokenLength: 40, windowSize: 4 });

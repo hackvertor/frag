@@ -92,6 +92,10 @@ function buildConfig(userConfig) {
   // 4-char windows: ~99% single-guess accuracy at 40 chars but ~4.5 MB of CSS.
   // 3-char windows: ~300 KB, but longer tokens often come back as candidates.
   const windowSize = Number(userConfig.windowSize) === 3 ? 3 : 4;
+  // How a hidden input's requests reach a rendering element: the next sibling
+  // (`sibling`, default) or the root via html:has() (`has`), which survives a
+  // hidden element sitting next to the input. Ignored for anchors.
+  const hostMode = userConfig.hostMode === 'has' ? 'has' : 'sibling';
   const sampleToken = crypto.randomBytes(Math.ceil(tokenLength / 2)).toString('hex').slice(0, tokenLength);
   const valuePrefix = selectorPrefix || userConfig.startSelector;
   const sampleExtra = userConfig.endSelector ? '&state=medium&rememberMe=false' : '';
@@ -136,6 +140,7 @@ function buildConfig(userConfig) {
       sampleHtml,
       tokenLength,
       windowSize,
+      hostMode,
     },
     contextHexChunks,
   };
@@ -176,7 +181,9 @@ app.post('/api/config', (req, res) => {
   console.log(`${D}selector: ${currentConfig.selector}${X}`);
   console.log(`${D}attribute: ${currentConfig.attribute}${X}`);
   console.log(`${D}length: ${currentConfig.tokenLength}${X}`);
-  console.log(`${D}window: ${currentConfig.windowSize}${X}\n`);
+  console.log(`${D}window: ${currentConfig.windowSize}${X}`);
+  if (currentConfig.tag === 'input') console.log(`${D}host: ${currentConfig.hostMode}${X}`);
+  console.log('');
   res.json(currentConfig);
 });
 
