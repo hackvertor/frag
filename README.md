@@ -132,13 +132,9 @@ npm test
 
 The tests generate random hex tokens of every length from 6 to 40, embed them in anchors (with and without random hex junk on the end of the href) and hidden inputs, work out which requests the real CSS payload (`public/payload.js`) would trigger, and check the stitched result. `test/blind.test.js` does the same for blind mode. It evaluates the recon and extract rules against a small model of a page (`test/blind-helpers.js`), from the same rule data the CSS is rendered from. Runs are seeded; use `FRAG_SEED=<n> npm test` to try a different set of tokens.
 
-Run actual Chrome rendering and HTTP-request checks with:
+`npm test` also runs actual Chrome rendering and HTTP-request checks (or run them alone with `npm run test:browser`). Chrome/Chromium is detected in common macOS/Linux locations; set `CHROME_BIN` for another installation. When no browser is found the checks are skipped so the portable suite still passes; set `FRAG_REQUIRE_BROWSER=1` (e.g. in CI, alongside an installed Chrome) to make a missing browser a failure instead.
 
-```bash
-npm run test:browser
-```
-
-This uses an isolated temporary browser profile and a local HTTP server. Chrome/Chromium is detected in common macOS/Linux locations; set `CHROME_BIN` for another installation. Checks cover both window sizes, all extraction hosts, recon retained during extraction, every input/meta recon name with mixed values, escaped values, compact property names, URL separators and case, empty and repeated matches, shared hosts, stylesheet splitting and same-origin CSP with a localhost collector. They compare parsed probes, computed backgrounds and received requests with the expected fragments.
+The browser checks use an isolated temporary browser profile and a local HTTP server. They cover both window sizes, all extraction hosts, recon retained during extraction, every input/meta recon name with mixed values, escaped values, compact property names, URL separators and case, empty and repeated matches, shared hosts, stylesheet splitting and same-origin CSP with a localhost collector. They compare parsed probes, computed backgrounds and received requests with the expected fragments.
 
 ### Usage
 

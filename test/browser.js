@@ -136,7 +136,15 @@ async function main() {
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
   ].find(p => fs.existsSync(p));
-  assert.ok(executable, 'Set CHROME_BIN to a Chrome/Chromium executable');
+  // Part of `npm test`, so skip (rather than fail) where Chrome is absent.
+  // CI that must run these sets FRAG_REQUIRE_BROWSER to turn a skip into a
+  // failure, and CHROME_BIN for a non-standard install.
+  if (!executable) {
+    const msg = 'browser checks skipped: no Chrome/Chromium found (set CHROME_BIN)';
+    if (process.env.FRAG_REQUIRE_BROWSER) { console.error(msg); process.exitCode = 1; }
+    else console.log(msg);
+    return;
+  }
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'frag-browser-'));
   let active;
   let chrome;
