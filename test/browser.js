@@ -109,6 +109,13 @@ for (const [charset, value] of Object.entries(charsetSecrets)) {
   blind(`blind a ${charset}`, [{ id: 0, kind: 'a', name: 'code', host: 'self', windowSize: 3, charset }],
     `<a href="${escapeHTML(url)}">host</a>`, page([el('a', { href: url })]));
 }
+// Numeric and symbol-only probes omit the redundant case-insensitive flag.
+// Check both their HTTP requests and reconstruction without any case pairs.
+for (const [charset, value] of Object.entries({ alnum: '0123456789', base64: '09+/=123', base64url: '09-_123' })) {
+  const built = buildConfig({ ...PRESETS.hidden, charset, tokenLength: value.length });
+  targeted(`no letters ${charset}`, built.config, value,
+    `<input type="hidden" name="csrf" value="${value}"><span>host</span>`, recovers(built, value));
+}
 blind('blind meta and data, alnum and base64url', [
   { id: 0, kind: 'meta', name: 'csrf-token', host: 'self', windowSize: 3, charset: 'alnum' },
   { id: 1, kind: 'data', name: 'data-api-key', host: 'self', windowSize: 3, charset: 'base64url' },

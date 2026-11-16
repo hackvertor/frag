@@ -102,6 +102,7 @@ test('charsets: alphabets, helpers and window sizes', () => {
   assert.equal(P.caseBigrams(P.CHARSETS.hex).length, 0);
   assert.equal(P.caseBigrams(P.CHARSETS.alnum).length, 62 ** 2 - 10 ** 2);
   assert.equal(P.caseBigrams(P.CHARSETS.base64).length, 65 ** 2 - 13 ** 2);
+  for (const cs of Object.values(P.CHARSETS)) assert.equal(P.caseBigramCount(cs), P.caseBigrams(cs).length);
   assert.deepEqual([...P.foldWindows('Token=AB/', P.CHARSETS.base64, 3)],
     ['tok', 'oke', 'ken', 'en=', 'n=a', '=ab', 'ab/']);
   assert.deepEqual([...P.foldWindows('callback?x', P.CHARSETS.hex, 3)], ['bac']);
@@ -110,6 +111,9 @@ test('charsets: alphabets, helpers and window sizes', () => {
   assert.equal(P.attributeTest('href', '*=', 'abc', true), '[href*=abc i]');
   assert.equal(P.attributeTest('href', '*=', '0ab', true), '[href*="0ab"i]');
   assert.equal(P.attributeTest('href', '*=', 'aB', false), '[href*=aB]');
+  assert.equal(P.attributeTest('href', '*=', '123', true), '[href*="123"]');
+  assert.equal(P.attributeTest('href', '*=', '+/=', true), '[href*="+/="]');
+  assert.equal(P.attributeTest('href', '*=', '-_9', true), '[href*=-_9]');
 });
 
 test('non-hex payloads: case-insensitive windows, case-sensitive pairs, encoded slashes', () => {
@@ -119,7 +123,7 @@ test('non-hex payloads: case-insensitive windows, case-sensitive pairs, encoded 
   const rules = parsePayload(css);
   assert.equal(rules.length, P.ruleCount(cfg));
   assert.equal(rules.length, 39 ** 3 + 2 * 39 ** 2 + 65 ** 2 - 13 ** 2);
-  for (const r of rules) assert.equal(r.ci, r.t !== 'c', `${r.t}/${r.c}`);
+  for (const r of rules) assert.equal(r.ci, r.t !== 'c' && /[a-z]/i.test(r.value), `${r.t}/${r.c}`);
   assert.ok(css.includes('&[href*=a\\/b i]{--'), 'slash windows are matched');
   assert.ok(css.includes('url(http://frag.test/a%2Fb),'), 'and sent as %2F');
   assert.ok(css.includes('&[href*=aB]{--'));

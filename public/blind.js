@@ -35,7 +35,7 @@
   const P = typeof module !== 'undefined' && module.exports ? require('./payload') : root;
   const {
     ANCHOR_LENGTH, MAX_LAYERS_PER_BOX, PSEUDO_BOXES, shortName, allWindows,
-    attributeTest, collectorURL, backgroundList, charsetOf, charsetName, windowSizeFor, caseBigrams,
+    attributeTest, collectorURL, backgroundList, charsetOf, windowSizeFor, caseBigrams, caseBigramCount,
     pathChunk,
   } = P;
 
@@ -327,7 +327,8 @@
         const only = charsetOnly('content', charset);
         const group = { tag: 'meta', ...only };
         META_NAMES.forEach(w => {
-          const test = { attrs: metaMatch(w).attrs };
+          // The parent already requires a non-empty content attribute.
+          const test = { attrs: [['name', '=', w, true]] };
           probe('meta', 'self', withTests(metaMatch(w), only), 'm' + suffix, w, group, test);
         });
       }
@@ -424,7 +425,7 @@
     const anchors = cs.fold.length ** ANCHOR_LENGTH;
     // start + windows + case pairs + end, and for URL params the per-value
     // "&" ends, the "#" end and the run starts.
-    return cs.fold.length ** k + caseBigrams(cs).length + 2 +
+    return cs.fold.length ** k + caseBigramCount(cs) + 2 +
       (WHOLE_KINDS.has(field.kind) ? 0 : 2 * anchors + 1);
   }
 
@@ -491,11 +492,6 @@
       };
 
       const anchors = allWindows(cs.fold, ANCHOR_LENGTH);
-      // Anchor props embed the anchor in the name, which may only use name
-      // chars: base64's "+/=" anchors use their index instead. "_" marks
-      // those, and can't clash with a real anchor because base64 has no "_"
-      // (base64url, which does, never needs the fallback).
-      const propSafe = a => (/^[\w-]+$/.test(a) ? a : anchors.indexOf(a).toString(36) + '_');
       for (const a of anchors) {
         if (whole) rule([attr, '^=', a, ci], `s${id}-`, 's/' + pathChunk(a));
         else {
@@ -509,18 +505,22 @@
       }
       for (const w of allWindows(cs.fold, k)) rule([attr, '*=', w, ci], shortName(n++), pathChunk(w));
       for (const p of caseBigrams(cs)) rule([attr, '*=', p], shortName(n++), 'c/' + pathChunk(p));
-      for (const a of anchors) {
+      for (let i = 0; i < anchors.length; i++) {
+        const a = anchors[i];
         const path = pathChunk(a);
         rule([attr, '$=', a, ci], `e${id}-`, 'e/' + path);
         // A URL param usually ends at the next "&" (or "#"), but other params
         // end there too, so each candidate end gets its own property and they
         // all reach the server rather than only the last matching rule.
         if (!whole) {
-          rule([attr, '*=', a + '&', ci], `e${id}-${propSafe(a)}`, 'e/' + path);
+          // Base64's "+/=" cannot appear in property names; use the anchor's
+          // index with a trailing "_", which base64 itself never contains.
+          const prop = /^[\w-]+$/.test(a) ? a : i.toString(36) + '_';
+          rule([attr, '*=', a + '&', ci], `e${id}-${prop}`, 'e/' + path);
           rule([attr, '*=', a + '#', ci], `f${id}-`, 'e/' + path);
           // Where every param value starts, so the solver can tell whole junk
           // params from a token spliced into one.
-          rule([attr, '*=', '=' + a, ci], `r${id}-${propSafe(a)}`, 'r/' + path);
+          rule([attr, '*=', '=' + a, ci], `r${id}-${prop}`, 'r/' + path);
         }
       }
       if (field.kind === 'meta') displayMeta = true;

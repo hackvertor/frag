@@ -76,8 +76,13 @@
   }
 
   function allWindows(alphabet, length) {
+    const chars = [...alphabet];
     let out = [''];
-    for (let i = 0; i < length; i++) out = out.flatMap(p => [...alphabet].map(c => p + c));
+    for (let i = 0; i < length; i++) {
+      const next = [];
+      for (const prefix of out) for (const c of chars) next.push(prefix + c);
+      out = next;
+    }
     return out;
   }
 
@@ -98,6 +103,15 @@
   function caseBigrams(cs) {
     if (!cs.cased) return [];
     return allWindows(alphabetOf(cs), 2).filter(p => isLetter(p[0]) || isLetter(p[1]));
+  }
+
+  // Count pairs without constructing thousands of strings just to size a
+  // payload or check whether another field fits on a host.
+  function caseBigramCount(cs) {
+    if (!cs.cased) return 0;
+    const alphabet = alphabetOf(cs);
+    const nonletters = [...alphabet].filter(c => !isLetter(c)).length;
+    return alphabet.length ** 2 - nonletters ** 2;
   }
 
   // Known text's lowercased windows that the payload would leak, and its case
@@ -128,6 +142,8 @@
   // One attribute test, optionally ASCII case-insensitive.
   function attributeTest(attr, op, value, ci) {
     const v = attributeValue(value);
+    // ASCII case folding cannot change a value containing no letters.
+    ci = ci && /[a-z]/i.test(value);
     return `[${attr}${op}${v}${ci ? (v.startsWith('"') ? 'i' : ' i') : ''}]`;
   }
 
@@ -135,7 +151,7 @@
   function ruleCount(cfg) {
     const cs = charsetOf(cfg.charset);
     const k = windowSizeFor(cfg.charset, cfg.windowSize);
-    return cs.fold.length ** k + 2 * cs.fold.length ** ANCHOR_LENGTH + caseBigrams(cs).length;
+    return cs.fold.length ** k + 2 * cs.fold.length ** ANCHOR_LENGTH + caseBigramCount(cs);
   }
 
   function generateCSS(cfg, server) {
@@ -210,7 +226,7 @@
   const api = {
     HEX, CHARSETS, ANCHOR_LENGTH, MAX_LAYERS_PER_BOX, PSEUDO_BOXES,
     shortName, attributeValue, attributeTest, collectorURL, backgroundList, allHex, allWindows,
-    charsetOf, charsetName, windowSizeFor, alphabetOf, isLetter, caseBigrams, foldWindows, caseBigramsIn,
+    charsetOf, charsetName, windowSizeFor, alphabetOf, isLetter, caseBigrams, caseBigramCount, foldWindows, caseBigramsIn,
     pathChunk, ruleCount, generateCSS,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
