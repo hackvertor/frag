@@ -126,7 +126,8 @@
 
   function renderTest([name, op, value, ci]) {
     if (!op) return `[${name}]`;
-    return `[${name}${op}${attributeValue(value)}${ci ? ' i' : ''}]`;
+    const v = attributeValue(value);
+    return `[${name}${op}${v}${ci ? (v.startsWith('"') ? 'i' : ' i') : ''}]`;
   }
 
   // `wrap` moves every attribute test inside :is(), leaving only the tag at
@@ -151,7 +152,10 @@
   //   form  the <form> the matched element is a direct child of
   //   html  the root element, if the match exists anywhere
   function subjectSelector(scope, match) {
-    if (scope === 'self') return renderMatch(match, true);
+    // Nested extraction rules already have a scoped parent selector. The
+    // extra :is() around each attribute test adds five bytes per probe and
+    // does not improve Chrome's stylesheet construction time here.
+    if (scope === 'self') return renderMatch(match, match.tag !== '&');
     if (scope === 'form') return `form:has(>${renderMatch(match)})`;
     return `html:has(${renderMatch(match)})`;
   }
@@ -196,7 +200,7 @@
         css.push(`${renderMatch(group, true)}{`);
         ruleCount++;
       }
-      const match = r.group ? { tag: '&', attrs: [r.test] } : r.match;
+      const match = r.group ? { tag: '&', ...r.test } : r.match;
       emit(`${subjectSelector(r.scope, match)}{--${r.prop}:url(${server}/${r.path}),}`);
     }
     closeGroup();
@@ -248,11 +252,11 @@
     const rules = [];
     const hostProps = { html: [], form: [], meta: [], a: [], data: [] };
     let n = 0;
-    const probe = (host, scope, match, kind, name) => {
+    const probe = (host, scope, match, kind, name, group, test) => {
       // Recon CSS can remain on the page during extraction. Its inherited
-      // properties must not collide with extraction's alphanumeric names.
+      // properties must not collide with extraction's names (no hyphens).
       const prop = 'r-' + shortName(n++);
-      rules.push({ scope, match, prop, path: `r/${kind}/${name}` });
+      rules.push({ scope, match, prop, path: `r/${kind}/${name}`, group, test });
       hostProps[host].push(prop);
     };
 
@@ -260,7 +264,14 @@
       INPUT_NAMES.forEach(w => {
         probe('html', 'html', inputMatch(w), 'i', w);
         probe('form', 'form', inputMatch(w), 'if', w);
-        probe('html', 'html', withTests(inputMatch(w), hexOnly('value')), 'ih', w);
+      });
+      // The long hex-only test is identical for every name. Factor it into
+      // one parent rule; these probes have distinct properties, so moving
+      // them together does not change cascade order or the requests.
+      const group = { tag: 'input', ...hexOnly('value') };
+      INPUT_NAMES.forEach(w => {
+        const test = { attrs: inputMatch(w).attrs };
+        probe('html', 'html', withTests(inputMatch(w), hexOnly('value')), 'ih', w, group, test);
       });
       probe('html', 'html', {
         tag: 'input',
@@ -271,7 +282,11 @@
     if (targets.has('meta')) {
       META_NAMES.forEach(w => {
         probe('meta', 'self', metaMatch(w), 'm', w);
-        probe('meta', 'self', withTests(metaMatch(w), hexOnly('content')), 'mh', w);
+      });
+      const group = { tag: 'meta', ...hexOnly('content') };
+      META_NAMES.forEach(w => {
+        const test = { attrs: metaMatch(w).attrs };
+        probe('meta', 'self', withTests(metaMatch(w), hexOnly('content')), 'mh', w, group, test);
       });
     }
     if (targets.has('url')) {
@@ -412,24 +427,19 @@
       if (!shared.has(key)) shared.set(key, new Set());
       const props = shared.get(key);
       const rule = (test, prop, path) => {
-        rules.push({ scope, match: withTests(match, { attrs: [test] }), group: match, test, prop, path: `b/${id}/${path}` });
+        rules.push({ scope, match: withTests(match, { attrs: [test] }), group: match,
+          test: { attrs: [test] }, prop, path: `b/${id}/${path}` });
         props.add(prop);
       };
 
       for (const a of allHex(ANCHOR_LENGTH)) {
         if (whole) rule([attr, '^=', a], `s${id}-`, 's/' + a);
         else {
-          for (const sep of '?&') {
-            const test = [attr, '*=', `${sep}${field.name}=${a}`, true];
-            rules.push({
-              scope,
-              match: { tag: match.tag, attrs: [test] },
-              group: match,
-              test,
-              prop: `s${id}-`,
-              path: `b/${id}/s/${a}`,
-            });
-          }
+          // Both separators set the same property and URL at the same
+          // specificity, so one :is() retains both probes and their order.
+          const test = { is: [...'?&'].map(sep => [attr, '*=', `${sep}${field.name}=${a}`, true]) };
+          rules.push({ scope, match: { tag: match.tag, ...test }, group: match,
+            test, prop: `s${id}-`, path: `b/${id}/s/${a}` });
           props.add(`s${id}-`);
         }
       }

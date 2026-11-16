@@ -90,7 +90,7 @@ function buildConfig(userConfig) {
   const attribute = userConfig.attribute || 'href';
   const tokenLength = userConfig.tokenLength || 40;
   // 4-char windows: ~99% single-guess accuracy at 40 chars but ~4 MB of CSS.
-  // 3-char windows: ~260 KB, but longer tokens often come back as candidates.
+  // 3-char windows: ~260–280 KB, but longer tokens often come back as candidates.
   const windowSize = Number(userConfig.windowSize) === 3 ? 3 : 4;
   // How a hidden input's requests reach a rendering element: the next sibling
   // (`sibling`, default) or the root via html:has() (`has`), which survives a

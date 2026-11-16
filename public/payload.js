@@ -15,7 +15,7 @@
   const ANCHOR_LENGTH = 2;
   const MAX_LAYERS_PER_BOX = 25000;
   const PSEUDO_BOXES = ['::before', '::after'];
-  const NAME_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const NAME_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_';
 
   function shortName(index) {
     // The leading -- makes digits valid too; custom properties are case-sensitive.
@@ -28,17 +28,24 @@
   }
 
   function attributeValue(value) {
-    if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(value)) return value;
-    return '"' + value.replace(/["\\\n\r\f\0]/g, c => {
+    if (/^(?:--|-?[A-Za-z_])[A-Za-z0-9_-]*$/.test(value)) return value;
+    const quoted = '"' + value.replace(/["\\\n\r\f\0]/g, c => {
       if (c === '\0') return '\ufffd';
       return /[\n\r\f]/.test(c) ? '\\' + c.charCodeAt(0).toString(16) + ' ' : '\\' + c;
     }) + '"';
+    // An escaped punctuation mark costs one byte, versus two quote marks.
+    // Keep numeric starts and control characters quoted; their identifier
+    // escapes are longer and can consume following hex digits.
+    if (!value || /^(?:[0-9]|-[0-9])/.test(value) || /[^\x21-\x7e]/.test(value)) return quoted;
+    const ident = value.replace(/[^A-Za-z0-9_-]/g, '\\$&');
+    return ident.length < quoted.length ? (ident === '-' ? '\\-' : ident) : quoted;
   }
 
   function collectorURL(server) {
     // Keep the abbreviation literal: URL serialization expands it to 127.0.0.1.
-    // HTTPS names must remain intact for certificate validation.
-    return server.replace(/^http:\/\/(?:localhost|127\.0\.0\.1)(?=[:/]|$)/i, 'http://127.1');
+    // Keep localhost: it can resolve to IPv6 and is a different origin for
+    // CSP. HTTPS names must remain intact for certificate validation too.
+    return server.replace(/^http:\/\/127\.0\.0\.1(?=[:/]|$)/i, 'http://127.1');
   }
 
   function backgroundList(props) {
@@ -75,7 +82,7 @@
     };
 
     // Start/end props contain a hyphen, so they can never clash with a
-    // shortName() (alphanumeric only) used for the window props.
+    // shortName() (alphanumeric/underscore) used for the window props.
     for (const a of allHex(ANCHOR_LENGTH)) {
       if (useStartsWith) rule('^=', a, 's-', 's/' + a);
       else rule('*=', startContext + a, 's-', 's/' + a);
