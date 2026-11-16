@@ -28,12 +28,14 @@ The window size trades CSS size against accuracy. Measured on random hex tokens 
 
 | Window | CSS | Single correct guess, 12 chars | 24 chars | 40 chars | 64 chars |
 |---|---|---|---|---|---|
-| 4 chars (default) | ~4.5 MB | 100% | 100% | 99.5% | ~97% |
-| 3 chars | ~300 KB | ~97% | ~72% | ~28% | ~1% |
+| 4 chars (default) | ~4.03 MB | 100% | 100% | 99.5% | ~97% |
+| 3 chars | ~260 KB | ~97% | ~72% | ~28% | ~1% |
 
 With 3-char windows the real token is still in the candidate list ~98% of the time at 40 chars; it just isn't the only answer. CSS size also grows with the length of your server's origin, since it appears in every rule.
 
-Chrome crashes the tab when a single element has tens of thousands of background layers (65k crashed, 32k was fine), so the 4-char payload spreads its layers across the element and its `::before`/`::after`. This has two side effects on the target page: any existing `::before`/`::after` content on that element is replaced, and if the page's own styles win the cascade for those pseudo-elements' `background`, the windows assigned to them won't leak and extraction fails. The 3-char payload uses only the element itself.
+Unmatched probes contribute no background layer: each matched custom property contains `url(...),`, and the background joins empty fallbacks such as `var(--a,)var(--b,)none`. Frag conservatively retains its limit of 25,000 probe references per box, introduced after large background lists crashed Chrome. The 4-char payload still spreads references across the element and its `::before`/`::after`. Any existing pseudo-element content is replaced, and if the page's styles override their backgrounds, those windows won't leak. The 3-char payload uses only the element itself.
+
+CSS sizes above are UTF-8 bytes (decimal KB/MB) for the anchor preset with an HTTP `127.0.0.1:3000` collector. Compact property names, short attribute-value escapes, empty fallbacks and the abbreviated IPv4 collector reduce the four-character payload from 4.67 MB to 4.03 MB without removing probes. Blind extraction additionally nests repeated field selectors and combines equivalent URL-start probes: a four-character `csrf` input on a form drops from 7.12 MB to 5.09 MB, and an anchor's `token` parameter from 6.68 MB to 4.35 MB. With `localhost:3000`, which must keep its hostname, the targeted payload is ~4.30 MB (four characters) or ~278 KB (three characters).
 
 The server treats a quiet gap of one second as the boundary between extractions: it waits for that gap before stitching, so a poll mid-burst can't lock in a reconstruction from partial data, and the first request after a gap starts a fresh extraction.
 
@@ -41,7 +43,7 @@ The server treats a quiet gap of one second as the boundary between extractions:
 
 Blind mode extracts tokens from a page you don't have selectors for. It only uses `background-image` requests, so it works where `@import` is blocked. Without `@import` there's no recursion: each injection is one static stylesheet. So blind mode runs in two stages.
 
-1. **Recon** (~200 KB). Wordlist probes report:
+1. **Recon** (~90 KB). Wordlist probes report:
    - which fields exist: hidden/other inputs by `name`, `<meta name>`, `?name=` params in `a[href]` and `form[action]`, and `data-*` attributes
    - which element can host the extraction requests
    - whether each value is lowercase hex
@@ -73,17 +75,17 @@ Measured with random hex tokens and unknown length (`test/blind.test.js`). The U
 
 | Field | Window | CSS per field | Single correct guess | Token listed |
 |---|---|---|---|---|
-| input / meta / data | 4 chars | ~6–7 MB | ~95% (6–64 chars) | 100% |
-| input / meta / data | 3 chars | ~0.4–0.5 MB | ~60% (6–40 chars) | ~99% |
-| URL param with junk | 4 chars | ~6 MB | ~70% (8–64 chars) | 100% |
-| URL param with junk | 3 chars | ~0.5 MB | rare | ~85% (8–24 chars) |
+| input / meta / data | 4 chars | ~4.49–5.09 MB | ~95% (6–64 chars) | 100% |
+| input / meta / data | 3 chars | ~0.29–0.34 MB | ~60% (6–40 chars) | ~99% |
+| URL param with junk | 4 chars | ~4.35–4.49 MB | ~70% (8–64 chars) | 100% |
+| URL param with junk | 3 chars | ~0.34–0.35 MB | rare | ~85% (8–24 chars) |
 
 A whole value that repeats a substring (e.g. `fffff`) leaks the same windows as one with fewer repeats, so every length that fits is listed, shortest first. URL params are ambiguous more often because a chance overlap can let the token's tail swap with a junk param's. Both splits then fit the leaked data equally well, so both are listed.
 
 ### Chrome behaviour this relies on
 
 - A stylesheet with more than 2^18 (262,144) rules is silently ignored, so payloads with several 4-char fields are split over multiple `<style>` elements.
-- Chrome takes ~7 s to build a sheet with tens of thousands of top-level attribute selectors such as `a[href*="abcd"]`, even if none match. Wrapped in `:is()` (`a:is([href*="abcd"])`), the same rules take ~0.1 s, so blind payloads keep their attribute tests inside `:is()`. The targeted payload doesn't do this yet.
+- Flat rules keep attribute tests inside `:is()` to avoid Chrome's slow stylesheet construction for top-level attribute selectors. Nested extraction rules use `&[href*=abcd]`: an additional `:is()` around each nested test did not improve Chrome timings and costs five bytes per rule.
 - Sibling hosts (`input[…] ~ *`) put every rule in Chrome's universal bucket and hung the tab on a 3,000-element page. Blind mode doesn't use them.
 
 ## Features
@@ -104,6 +106,8 @@ node server.js
 
 Then visit `http://localhost:3000` in your browser.
 
+Generated collector URLs abbreviate HTTP `127.0.0.1` to `127.1`, keeping the port: `http://127.1:3000`. Browsers normalize these to the same origin. `localhost` is preserved because it is a distinct origin for CSP and may resolve to IPv6. HTTPS hostnames, IPv6 addresses and external collectors are also preserved.
+
 ### Configuration
 
 Use the web UI to configure:
@@ -117,7 +121,7 @@ Use the web UI to configure:
 | **start** | Known text immediately before the token |
 | **end** | Known text immediately after the token |
 | **length** | Expected token length |
-| **window** | 4 chars (~99% accurate, ~4.5 MB) or 3 chars (~300 KB, longer tokens may give candidates) |
+| **window** | 4 chars (~99% accurate, ~4.03 MB) or 3 chars (~260 KB, longer tokens may give candidates) |
 | **host** | Hidden inputs only: which element fires the requests. `next sibling (+)` uses `input+*` — smallest, but fails if the input has no rendering next sibling (e.g. it's the last child or another non-rendering element follows it). `html:has()` hosts on the root via `html:has(input…)`, which survives those cases at the cost of one `:has()` test per rule. Anchors render themselves, so this is ignored for them. |
 
 ### Testing
@@ -127,6 +131,10 @@ npm test
 ```
 
 The tests generate random hex tokens of every length from 6 to 40, embed them in anchors (with and without random hex junk on the end of the href) and hidden inputs, work out which requests the real CSS payload (`public/payload.js`) would trigger, and check the stitched result. `test/blind.test.js` does the same for blind mode. It evaluates the recon and extract rules against a small model of a page (`test/blind-helpers.js`), from the same rule data the CSS is rendered from. Runs are seeded; use `FRAG_SEED=<n> npm test` to try a different set of tokens.
+
+`npm test` also runs actual Chrome rendering and HTTP-request checks (or run them alone with `npm run test:browser`). Chrome/Chromium is detected in common macOS/Linux locations; set `CHROME_BIN` for another installation. When no browser is found the checks are skipped so the portable suite still passes; set `FRAG_REQUIRE_BROWSER=1` (e.g. in CI, alongside an installed Chrome) to make a missing browser a failure instead.
+
+The browser checks use an isolated temporary browser profile and a local HTTP server. They cover both window sizes, all extraction hosts, recon retained during extraction, every input/meta recon name with mixed values, escaped values, compact property names, URL separators and case, empty and repeated matches, shared hosts, stylesheet splitting and same-origin CSP with a localhost collector. They compare parsed probes, computed backgrounds and received requests with the expected fragments.
 
 ### Usage
 
