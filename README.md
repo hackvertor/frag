@@ -62,7 +62,11 @@ The server treats a quiet gap of one second as the boundary between extractions:
 
 ## Blind mode
 
-Blind mode extracts tokens from a page you don't have selectors for. It only uses `background-image` requests, so it works where `@import` is blocked. Without `@import` there's no recursion: each injection is one static stylesheet. So blind mode runs in two stages.
+Blind mode extracts tokens from a page you don't have selectors for. It only uses `background-image` requests, so it works where `@import` is blocked. **One-shot mode** combines discovery and extraction probes in one static stylesheet: copy it, inject it once, and read the results. Select the target kinds and, for URL parameters, the likely charset and window size before copying. Input, meta and selected `data-*` values use one shared alphabet that covers hex, alphanumeric, base64 and base64url; discovery hits tell the solver which narrower charset to use. The default five data attribute names can be edited (up to eight).
+
+The default one-shot payload is about 33–35 MB with a local collector. It shares one extraction lane per kind (`input`, `meta`, `a` URL parameter, `form` URL parameter and `data-*`). If more than one field name of the same kind is present, their fragments may mix, so Frag reports the names as a collision instead of assigning a token to the wrong field. Multiple elements with the *same* name can still mix, as in the existing blind flow. URL parameter values cannot be classified by the discovery probes because the surrounding URL contains other characters, so choose their charset before injection; hex is the default. The data attribute shortlist limits payload size, so names outside it require changing the list or using the advanced flow. Hosts must render, and the shared input lane uses `html:has()`.
+
+The advanced two-stage flow handles several fields of the same kind and lets you choose each field's charset individually:
 
 1. **Recon** (~129 KB). Wordlist probes report:
    - which fields exist: hidden/other inputs by `name`, `<meta name>`, `?name=` params in `a[href]` and `form[action]`, and `data-*` attributes
@@ -75,7 +79,7 @@ Blind mode extracts tokens from a page you don't have selectors for. It only use
    - **Whole values** (input, meta, data-\*): the shortest token that uses every leaked window.
    - **URL params**: candidates are ranked by how many characters they need for the token plus the junk around it. These payloads also leak where each param value starts (`=ab`) and every possible end (`ab&`, `ab#`, end of URL). Leftovers that start or end mid-value then count against a candidate.
 
-Usage: switch the UI to **blind**, copy the recon payload, inject it, then pick the discovered fields, copy the extract payload and inject that. The test area has a sample page with one field of each kind.
+Usage: switch the UI to **blind** and copy the one-shot payload. The test area has a sample page with one field of each kind. Open **Advanced: separate discovery and extraction** when one-shot reports a collision or you need a field outside the shortlist.
 
 ### Hosts
 

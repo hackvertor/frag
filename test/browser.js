@@ -123,6 +123,27 @@ blind('blind meta and data, alnum and base64url', [
 page([el('meta', { name: 'csrf-token', content: charsetSecrets.alnum }),
   el('div', { 'data-api-key': charsetSecrets.base64url })]));
 
+const oneShotConfig = { targets: B.TARGETS, dataNames: B.ONE_SHOT_DATA_NAMES, urlCharset: 'hex', urlWindow: 4 };
+const oneShotFields = B.oneShotFields(oneShotConfig);
+const oneShotFormValue = `fedcba9876543210abcdefff`;
+const oneShotForm = el('form', { action: `/login?state=${oneShotFormValue}` });
+const oneShotURL = `https://example.com/?code=${secret}&next=home`;
+const oneShotDoc = page([oneShotForm,
+  el('input', { type: 'hidden', name: 'csrf_token', value: charsetSecrets.alnum }, { form: oneShotForm }),
+  el('meta', { name: 'csrf-token', content: charsetSecrets.base64 }),
+  el('a', { href: oneShotURL }),
+  el('span', { 'data-api-key': charsetSecrets.base64url }),
+]);
+cases.push({ name: 'one-shot blind discovery and extraction',
+  html: `<form action="/login?state=${oneShotFormValue}"><input type="hidden" name="csrf_token" value="${charsetSecrets.alnum}">host</form>` +
+    `<meta name="csrf-token" content="${charsetSecrets.base64}">` +
+    `<a href="${escapeHTML(oneShotURL)}">host</a><span data-api-key="${charsetSecrets.base64url}">host</span>`,
+  build(origin) {
+    const payload = B.oneShotPayload(oneShotFields, oneShotConfig);
+    return { css: B.render(payload, origin), expected: requests(oneShotDoc, payload), probeCount: payload.rules.length };
+  },
+});
+
 const quoted = '"\\' + secret + '\n&';
 targeted('escaped attribute context', { selector: 'a', attribute: 'href', tag: 'a', windowSize: 3,
   startContext: '"\\', endContext: '\n&' }, quoted, `<a href="${escapeHTML(quoted)}">target</a>`);
