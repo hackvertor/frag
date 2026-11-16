@@ -123,7 +123,8 @@ blind('blind meta and data, alnum and base64url', [
 page([el('meta', { name: 'csrf-token', content: charsetSecrets.alnum }),
   el('div', { 'data-api-key': charsetSecrets.base64url })]));
 
-const oneShotConfig = { targets: B.TARGETS, dataNames: B.ONE_SHOT_DATA_NAMES, urlCharset: 'hex', urlWindow: 4 };
+const oneShotConfig = { targets: B.TARGETS, urlKinds: ['a', 'form'],
+  dataNames: B.ONE_SHOT_DATA_NAMES, urlCharset: 'hex', urlWindow: 4 };
 const oneShotFields = B.oneShotFields(oneShotConfig);
 const oneShotFormValue = `fedcba9876543210abcdefff`;
 const oneShotForm = el('form', { action: `/login?state=${oneShotFormValue}` });
@@ -141,6 +142,21 @@ cases.push({ name: 'one-shot blind discovery and extraction',
   build(origin) {
     const payload = B.oneShotPayload(oneShotFields, oneShotConfig);
     return { css: B.render(payload, origin), expected: requests(oneShotDoc, payload), probeCount: payload.rules.length };
+  },
+});
+
+const busyConfig = { targets: ['input'], dataNames: [], urlCharset: 'hex', urlWindow: 4 };
+const busyFields = B.oneShotFields(busyConfig);
+const busySecret = charsetSecrets.alnum;
+const busyInput = el('input', { type: 'hidden', name: 'csrf', value: busySecret });
+const busyRows = Array.from({ length: 600 }, (_, i) =>
+  `<div><span>row</span><a href="/item?id=${i}&ref=list">link</a><input name="q${i}"><p>text</p></div>`).join('');
+cases.push({ name: 'one-shot hidden input on a busy page',
+  html: `<input type="hidden" name="csrf" value="${busySecret}"><span>host</span>${busyRows}`,
+  build(origin) {
+    const payload = B.oneShotPayload(busyFields, busyConfig);
+    return { css: B.render(payload, origin), expected: requests(page([busyInput]), payload),
+      probeCount: payload.rules.length };
   },
 });
 

@@ -292,7 +292,8 @@ test('blind: non-hex charsets are detected by recon and extracted over HTTP', as
 
 test('blind: one injection discovers and extracts different field kinds', async () => {
   await getJson('/api/blind/reset');
-  const cfg = { targets: B.TARGETS, dataNames: B.ONE_SHOT_DATA_NAMES, urlCharset: 'hex', urlWindow: 4 };
+  const cfg = { targets: B.TARGETS, urlKinds: ['a', 'form'],
+    dataNames: B.ONE_SHOT_DATA_NAMES, urlCharset: 'hex', urlWindow: 4 };
   const response = await postJson('/api/blind/one-shot', cfg);
   assert.equal(response.status, 200);
   const { fields } = await response.json();
@@ -331,8 +332,66 @@ test('blind: one-shot rejects unknown attribute names and impossible options', a
     { ...cfg, dataNames: ['data-unknown'] },
     { ...cfg, targets: ['input', 'input'] },
     { ...cfg, dataNames: [] },
+    { ...cfg, inputNames: ['not-in-wordlist'] },
+    { ...cfg, urlKinds: ['script'] },
     { ...cfg, urlCharset: 'unknown' },
   ]) assert.equal((await postJson('/api/blind/one-shot', bad)).status, 400);
+});
+
+test('blind: empty input names do not hide a populated hidden token', async () => {
+  await getJson('/api/blind/reset');
+  const cfg = { targets: ['input'], inputNames: ['authenticity_token', 'code'],
+    dataNames: [], urlCharset: 'hex', urlWindow: 4 };
+  const { fields } = await (await postJson('/api/blind/one-shot', cfg)).json();
+  const secret = 'Ab3dEfGh9JkLmN0pQrStUvWxYz12345678';
+  const doc = page([
+    el('input', { type: 'hidden', name: 'authenticity_token', value: secret }),
+    el('input', { type: 'text', name: 'code', value: '' }),
+  ]);
+  for (const path of requests(doc, B.oneShotPayload(fields, cfg))) await hit(path);
+  await sleep(SETTLE_MS + 50);
+  const result = (await getJson('/api/blind/tokens')).results[0];
+  assert.equal(result.name, 'authenticity_token');
+  assert.equal(result.status, 'ok');
+  assert.ok(listed(result, secret));
+});
+
+test('blind: text inputs with a hidden input name cannot change its detected charset', async () => {
+  await getJson('/api/blind/reset');
+  const cfg = { targets: ['input'], inputNames: ['csrf'],
+    dataNames: [], urlCharset: 'hex', urlWindow: 4 };
+  const { fields } = await (await postJson('/api/blind/one-shot', cfg)).json();
+  const secret = 'Ab3d+fG/9JkL=N0pQrSt+vWx/z1234567=';
+  const doc = page([
+    el('input', { type: 'hidden', name: 'csrf', value: secret }),
+    el('input', { type: 'text', name: 'csrf', value: 'ordinarytext' }),
+  ]);
+  for (const path of requests(doc, B.oneShotPayload(fields, cfg))) await hit(path);
+  await sleep(SETTLE_MS + 50);
+  const result = (await getJson('/api/blind/tokens')).results[0];
+  assert.equal(result.status, 'ok');
+  assert.ok(listed(result, secret), JSON.stringify(result));
+});
+
+test('blind: one-shot keeps early fields when a later lane crosses the settle gap', async () => {
+  await getJson('/api/blind/reset');
+  const cfg = { targets: ['input', 'meta'], dataNames: [], urlCharset: 'hex', urlWindow: 4 };
+  const { fields } = await (await postJson('/api/blind/one-shot', cfg)).json();
+  const input = 'Ab3dEfGh9JkLmN0pQrStUvWxYz12345678';
+  const meta = 'Ab3d+fG/9JkL=N0pQrSt+vWx/z1234567=';
+  const doc = page([
+    el('input', { type: 'hidden', name: 'csrf', value: input }),
+    el('meta', { name: 'csrf-token', content: meta }),
+  ]);
+  const paths = requests(doc, B.oneShotPayload(fields, cfg));
+  for (const path of paths) if (path.startsWith('r/m') || path.startsWith(`b/${fields[1].id}/`)) await hit(path);
+  await sleep(SETTLE_MS + 50);
+  assert.equal((await getJson('/api/blind/tokens')).results[1].status, 'ok');
+  for (const path of paths) if (path.startsWith('r/i') || path.startsWith(`b/${fields[0].id}/`)) await hit(path);
+  await sleep(SETTLE_MS + 50);
+  const results = (await getJson('/api/blind/tokens')).results;
+  assert.ok(listed(results[0], input), JSON.stringify(results[0]));
+  assert.ok(listed(results[1], meta), JSON.stringify(results[1]));
 });
 
 test('blind: one-shot reports mixed field names rather than misattributing a token', async () => {

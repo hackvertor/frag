@@ -256,13 +256,28 @@
   <div class="panel blind-only hidden-mode">
     <div class="panel-header">one-shot blind extraction</div>
     <div class="targets">
-      <label><input type="checkbox" class="one-shot-target" value="input" checked> input[value]</label>
-      <label><input type="checkbox" class="one-shot-target" value="meta" checked> meta[content]</label>
-      <label><input type="checkbox" class="one-shot-target" value="url" checked> a[href] / form[action] params</label>
-      <label><input type="checkbox" class="one-shot-target" value="data" checked> data-* attributes</label>
+      <label><input type="checkbox" class="one-shot-target" value="input" checked> hidden inputs</label>
+      <label><input type="checkbox" class="one-shot-target" value="meta"> meta[content]</label>
+      <label><input type="checkbox" class="one-shot-target" value="url"> URL params</label>
+      <label><input type="checkbox" class="one-shot-target" value="data"> data-* attributes</label>
+    </div>
+    <div class="config-row">
+      <span class="config-label">inputs</span>
+      <input id="oneShotInputNames" class="config-input" value="csrf, csrf_token, token, authenticity_token, nonce" aria-label="Hidden input names">
+    </div>
+    <div class="config-row">
+      <span class="config-label">meta</span>
+      <input id="oneShotMetaNames" class="config-input" value="csrf-token, csrf, token, nonce" aria-label="Meta names">
+    </div>
+    <div class="config-row">
+      <span class="config-label">params</span>
+      <input id="oneShotUrlNames" class="config-input" value="token, code, state, key, csrf" aria-label="URL parameter names">
     </div>
     <div class="config-row">
       <span class="config-label">URL</span>
+      <select id="oneShotUrlKinds" class="config-input">
+        <option value="a">links</option><option value="form">form actions</option><option value="a,form">both</option>
+      </select>
       <select id="oneShotUrlCharset" class="config-input">
         <option value="hex">hex</option><option value="alnum">alphanumeric</option>
         <option value="base64">base64</option><option value="base64url">base64url</option>
@@ -283,7 +298,7 @@
       <button class="btn" id="oneShotCopyBtn">copy one-shot payload</button>
       <span class="status" id="oneShotCopyStatus"></span>
     </div>
-    <div class="note">Inject once. Whole values detect their charset automatically. URL params use the selected charset. Each kind shares one extraction lane, so two matching names of the same kind are reported as a collision. The full default payload is about 35 MB on localhost; select fewer targets to reduce it.</div>
+    <div class="note">Inject once. The default searches five common hidden-input names; add other targets as needed. Whole values detect their charset automatically. URL params use the selected charset. Each kind shares one extraction lane; matching names of the same kind are reported as a collision, while empty whole-value fields are ignored. Long hex values may have several candidates with one-shot's 3-character windows; use Advanced for 4-character hex windows. Large payloads can take much longer on busy pages.</div>
   </div>
 
   <details class="blind-only hidden-mode">
@@ -762,9 +777,14 @@ function initBlind() {
 
   document.getElementById('oneShotCopyBtn').addEventListener('click', async () => {
     const status = document.getElementById('oneShotCopyStatus');
+    const names = id => document.getElementById(id).value.split(',').map(s => s.trim()).filter(Boolean);
     const cfg = {
       targets: [...document.querySelectorAll('.one-shot-target:checked')].map(e => e.value),
-      dataNames: document.getElementById('oneShotDataNames').value.split(',').map(s => s.trim()).filter(Boolean),
+      inputNames: names('oneShotInputNames'),
+      metaNames: names('oneShotMetaNames'),
+      urlNames: names('oneShotUrlNames'),
+      urlKinds: document.getElementById('oneShotUrlKinds').value.split(','),
+      dataNames: names('oneShotDataNames'),
       urlCharset: document.getElementById('oneShotUrlCharset').value,
       urlWindow: Number(document.getElementById('oneShotUrlWindow').value),
     };
@@ -773,17 +793,19 @@ function initBlind() {
       return;
     }
     status.textContent = 'building payload...';
-    const res = await fetch('/api/blind/one-shot', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      status.textContent = data.error || 'failed';
-      return;
+    try {
+      const res = await fetch('/api/blind/one-shot', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'configuration failed');
+      const css = FragBlind.generateOneShotCSS(data.fields, cfg, window.location.origin);
+      renderResults({ status: 'waiting' });
+      await copyPayload(css, document.getElementById('oneShotCopyMode').value, status);
+    } catch (error) {
+      status.textContent = error.message || 'could not build payload';
+      status.className = 'status';
     }
-    renderResults({ status: 'waiting' });
-    const css = FragBlind.generateOneShotCSS(data.fields, cfg, window.location.origin);
-    copyPayload(css, document.getElementById('oneShotCopyMode').value, status);
   });
 
   document.getElementById('reconCopyBtn').addEventListener('click', () => {

