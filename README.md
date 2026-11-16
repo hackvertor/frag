@@ -130,11 +130,10 @@ The tests generate random hex tokens of every length from 6 to 40, embed them in
 
 ### Usage
 
-1. Configure the target element and token parameters
-2. Click **Apply** to update the server
-3. Copy the generated CSS payload
-4. Inject the CSS into the target page
-5. Watch the token appear in the terminal as chunks arrive
+1. Configure the target element and token parameters (changes apply to the server automatically)
+2. Copy the generated CSS payload
+3. Inject the CSS into the target page
+4. Watch the token appear in the terminal as chunks arrive
 
 ## Background
 
