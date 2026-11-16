@@ -38,10 +38,12 @@ function grams(s, k) {
 //   &[href*="abc"]{--a:url(http://x/abc)}             anchor
 //   &[value^="ab"]+*{--s-:url(http://x/s/ab)}         hidden input, sibling host
 //   html:has(&[value*="abcd"]){--a:url(http://x/abcd)} hidden input, :has() host
-// The matching attribute test is the last one before the rule body, so it is
-// followed by nothing (anchor), `+*` (sibling), or `)` (the :has() close).
+// Every form keeps the `&` nesting anchor (`html:has(&[...])` too), so it still
+// pins the match to an emitted rule. The matching attribute test is the last
+// one before the rule body, so it is followed by nothing (anchor), `+*`
+// (sibling), or `)` (the :has() close).
 function parsePayload(css) {
-  const re = /\[([\w-]+)([\^*$]?=)"([^"]*)"\](?:\+\*|\))?\{--([\w-]+):url\([^)]*?\/(?:([se])\/)?([0-9a-f]+)\)\}/g;
+  const re = /&\[([\w-]+)([\^*$]?=)"([^"]*)"\](?:\+\*|\))?\{--([\w-]+):url\([^)]*?\/(?:([se])\/)?([0-9a-f]+)\)\}/g;
   const rules = [];
   for (const [, attr, op, value, prop, type, chunk] of css.matchAll(re)) {
     rules.push({ index: rules.length, attr, op, value, prop, t: type || 'm', c: chunk });
