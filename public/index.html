@@ -223,8 +223,7 @@
       </select>
     </div>
     <div style="margin-top:12px" class="actions">
-      <button class="btn" id="applyBtn">apply</button>
-      <span class="status" id="applyStatus"></span>
+      <span class="status" id="applyStatus">changes apply automatically</span>
     </div>
   </div>
 
@@ -314,6 +313,10 @@
 <script src="/blind.js"></script>
 <script>
 let CONFIG = null;
+// The most recent applyConfig() round-trip. Config now applies automatically
+// on every field change, so copy/generate must wait for an in-flight apply to
+// land before reading CONFIG, or they'd build a payload from the old config.
+let applyPromise = Promise.resolve();
 
 const PRESETS = {
   anchor: {
@@ -362,7 +365,7 @@ function loadPreset(type) {
   updateHostRow();
 }
 
-async function applyConfig() {
+function applyConfig() {
   const body = {
     selector: document.getElementById('cfgSelector').value,
     attribute: document.getElementById('cfgAttr').value,
@@ -375,25 +378,30 @@ async function applyConfig() {
   };
 
   const status = document.getElementById('applyStatus');
-  try {
-    const res = await fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    CONFIG = await res.json();
-    document.getElementById('sampleToken').textContent = CONFIG.sampleToken;
-    document.getElementById('testArea').innerHTML = CONFIG.sampleHtml;
-    document.getElementById('extractedToken').textContent = 'waiting for extraction...';
-    document.getElementById('extractedToken').classList.add('muted');
-    document.getElementById('statusDot').className = 'indicator';
-    status.textContent = 'applied';
-    status.className = 'status ok';
-  } catch (e) {
-    status.textContent = 'failed';
-    status.className = 'status';
-  }
-  setTimeout(() => { status.textContent = ''; }, 2000);
+  status.textContent = 'applying...';
+  status.className = 'status';
+  applyPromise = (async () => {
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      CONFIG = await res.json();
+      document.getElementById('sampleToken').textContent = CONFIG.sampleToken;
+      document.getElementById('testArea').innerHTML = CONFIG.sampleHtml;
+      document.getElementById('extractedToken').textContent = 'waiting for extraction...';
+      document.getElementById('extractedToken').classList.add('muted');
+      document.getElementById('statusDot').className = 'indicator';
+      status.textContent = 'applied';
+      status.className = 'status ok';
+    } catch (e) {
+      status.textContent = 'failed';
+      status.className = 'status';
+    }
+    setTimeout(() => { status.textContent = 'changes apply automatically'; status.className = 'status'; }, 1500);
+  })();
+  return applyPromise;
 }
 
 async function checkToken() {
@@ -461,15 +469,23 @@ async function init() {
     testArea.innerHTML = html + (MODE === 'blind' ? BLIND_SAMPLE.html : (CONFIG ? CONFIG.sampleHtml : ''));
   });
 
+  // Changing the type swaps in that preset, then applies it.
   document.getElementById('cfgType').addEventListener('change', (e) => {
     loadPreset(e.target.value);
+    applyConfig();
   });
 
-  document.getElementById('applyBtn').addEventListener('click', applyConfig);
+  // Every other field auto-applies on change (fires on blur / dropdown select,
+  // so no debounce is needed and unchanged fields don't re-apply).
+  for (const id of ['cfgSelector', 'cfgAttr', 'cfgToken', 'cfgStart', 'cfgEnd', 'cfgLength', 'cfgWindow', 'cfgHost']) {
+    document.getElementById(id).addEventListener('change', applyConfig);
+  }
 
   document.getElementById('copyBtn').addEventListener('click', async () => {
     const status = document.getElementById('copyStatus');
     const mode = document.getElementById('copyMode').value;
+    // Wait for any in-flight apply so the payload reflects the latest config.
+    await applyPromise;
     const css = generateCSS(CONFIG, window.location.origin);
     try {
       if (mode === 'test') {
