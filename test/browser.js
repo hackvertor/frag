@@ -236,6 +236,31 @@ targeted('realistic login form (hidden input, html:has host)', loginCfg.config, 
   `<p><a href="/password/new">Forgot your password?</a></p></main>`,
   recovers(loginCfg, hexSecret));
 
+// The same login form buried in a large, busy dashboard (hundreds of rows of
+// ordinary page chrome). With the html:has host and 4-char windows the browser
+// must evaluate :has across the whole DOM for every rule, so this guards
+// against Chrome crashing or stalling on a big page: the harness fails the case
+// if Chrome does not return the exact expected request set within its timeout.
+// None of the chrome matches the selector, so the expected requests are still
+// just the token's fragments.
+const busyChrome = Array.from({ length: 400 }, (_, i) =>
+  `<li class="activity-row"><a href="/users/${i}/profile">User ${i}</a>` +
+  `<span class="meta">signed in from 10.0.0.${i % 256}</span>` +
+  `<input type="text" name="note_${i}" value="" placeholder="Add a note">` +
+  `<button type="button">Dismiss</button></li>`).join('');
+targeted('realistic login form buried in a busy dashboard (html:has host, 4-char)',
+  loginCfg.config, hexSecret,
+  `<aside><nav><a href="/dashboard">Dashboard</a><a href="/team">Team</a>` +
+  `<a href="/billing">Billing</a><a href="/settings">Settings</a></nav></aside>` +
+  `<main><h1>Sign in to continue</h1>` +
+  `<form action="/session" method="post" accept-charset="UTF-8">` +
+  `<input type="hidden" name="authenticity_token" value="${hexSecret}" autocomplete="off">` +
+  `<label>Email <input type="email" name="email"></label>` +
+  `<label>Password <input type="password" name="password"></label>` +
+  `<button type="submit">Log in</button></form>` +
+  `<section class="recent"><h2>Recent activity</h2><ul>${busyChrome}</ul></section></main>`,
+  recovers(loginCfg, hexSecret));
+
 const form = el('form');
 const both = `<form><input type="hidden" name="csrf" value="${secret}">` +
   '<input type="hidden" name="nonce" value="fedcba9876543210"><span>host</span></form>';
