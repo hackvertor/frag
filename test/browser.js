@@ -200,6 +200,42 @@ targeted('localhost collector with same-origin CSP', { selector: 'a', attribute:
   useStartsWith: true, useEndsWith: true }, secret, `<a href="${secret}">target</a>`);
 Object.assign(cases[cases.length - 1], { hostname: 'localhost', csp: "img-src 'self'" });
 
+// Realistic full pages rendered in Chrome: the token sits in among ordinary
+// page chrome (headings, copy, other links, buttons), and we check the browser
+// fires exactly the fragment requests that rebuild it. A clean 40-char hex
+// token with 4-char windows recovers as a single answer.
+const hexSecret = '3f8a1c9e0b2d4f6a8c1e3b5d7f9a0c2e4b6d8f0a';
+const resetCfg = buildConfig({
+  selector: 'a[href^="https://app.example.com/account/reset?"]', attribute: 'href',
+  tokenName: 'reset token', startSelector: 'token=', endSelector: '&uid=',
+  tokenLength: hexSecret.length, windowSize: 4, charset: 'hex',
+});
+const resetHref = `https://app.example.com/account/reset?token=${hexSecret}&uid=4821`;
+targeted('realistic password-reset email (anchor)', resetCfg.config, resetHref,
+  `<div class="email-body" style="font-family:sans-serif">` +
+  `<h1>Reset your password</h1><p>Hi Alex,</p>` +
+  `<p>We received a request to reset your password. Click the button below to continue.</p>` +
+  `<a class="btn btn-primary" href="${escapeHTML(resetHref)}">Reset password</a>` +
+  `<p>Didn't request this? <a href="https://app.example.com/security">Let us know</a>.</p>` +
+  `<footer><a href="https://app.example.com/unsubscribe?u=4821">Unsubscribe</a></footer></div>`,
+  recovers(resetCfg, hexSecret));
+
+const loginCfg = buildConfig({
+  selector: 'input[type="hidden"][name="authenticity_token"]', attribute: 'value',
+  tokenName: 'authenticity_token', startSelector: '', endSelector: '',
+  tokenLength: hexSecret.length, windowSize: 4, charset: 'hex', hostMode: 'has',
+});
+targeted('realistic login form (hidden input, html:has host)', loginCfg.config, hexSecret,
+  `<header><nav><a href="/">Home</a><a href="/pricing">Pricing</a></nav></header>` +
+  `<main><h1>Sign in</h1>` +
+  `<form action="/session" method="post" accept-charset="UTF-8">` +
+  `<input type="hidden" name="authenticity_token" value="${hexSecret}" autocomplete="off">` +
+  `<label>Email <input type="email" name="email"></label>` +
+  `<label>Password <input type="password" name="password"></label>` +
+  `<button type="submit">Log in</button></form>` +
+  `<p><a href="/password/new">Forgot your password?</a></p></main>`,
+  recovers(loginCfg, hexSecret));
+
 const form = el('form');
 const both = `<form><input type="hidden" name="csrf" value="${secret}">` +
   '<input type="hidden" name="nonce" value="fedcba9876543210"><span>host</span></form>';
