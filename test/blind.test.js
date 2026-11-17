@@ -167,6 +167,13 @@ test('extract URLs are namespaced by field and carry no duplicate props', () => 
   assert.equal(new Set(windowProps).size, windowProps.length);
 });
 
+test('one-shot rejects a combined host that exceeds its layer capacity', () => {
+  const cfg = { targets: ['input'] };
+  const fields = B.oneShotFields(cfg);
+  assert.throws(() => B.oneShotPayload([...fields, { ...fields[0], id: fields[0].id + 1 }], cfg),
+    /one-shot host html needs \d+ layers \(limit 75000\)/);
+});
+
 test('non-hex extract payloads: case pairs, encoded slashes and valid, unique props', () => {
   const extract = B.extractPayload([
     { id: 0, kind: 'a', name: 'code', host: 'self', windowSize: 3, charset: 'base64' },

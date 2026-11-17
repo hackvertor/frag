@@ -58,11 +58,59 @@ Case ties (e.g. a lowercase copy of part of the token elsewhere in the attribute
 
 When testing in the UI, inject each payload into a fresh page: a browser won't re-request an image URL it already loaded in the same page, and alphanumeric, base64 and base64url share most window URLs.
 
-The server treats a quiet gap of one second as the boundary between extractions: it waits for that gap before stitching, so a poll mid-burst can't lock in a reconstruction from partial data, and the first request after a gap starts a fresh extraction.
+The targeted mode and blind recon mode treat a quiet gap of one second as the boundary between extractions: the server waits for that gap before stitching, and the first request after it starts a fresh extraction. One-shot mode also waits for a quiet gap before stitching, but keeps hits across gaps so a delayed lane cannot erase an earlier one. Reset or reconfigure one-shot mode before a separate injection.
+
+### Accuracy by token length
+
+The rates above average over a range of lengths, but accuracy depends strongly on how long the token is — and for 3-char hex it falls off sharply past ~24 characters. The table below breaks it out. Each cell is `single% (listed%)`: **single** is how often Frag returns exactly one answer and it is the real token; **listed** is how often the real token is among the returned candidates (so the gap between them is how often it comes back as one of several equally plausible answers). Measured over 200 random tokens per cell in the anchor preset (with and without random same-charset junk after the href) and in a hidden input; non-hex charsets use 3-char windows plus case pairs. Regenerate from the same leak/stitch pipeline as `test/stitch.test.js` (seed `0xabcd`).
+
+| Field | Charset | Window | 8 | 16 | 24 | 32 | 40 | 64 |
+|---|---|---|---|---|---|---|---|---|
+| anchor | hex | 4-char | 100 (100) | 100 (100) | 100 (100) | 100 (100) | 99 (100) | 97 (100) |
+| anchor + junk | hex | 4-char | 100 (100) | 100 (100) | 100 (100) | 100 (100) | 100 (100) | 98 (100) |
+| hidden input | hex | 4-char | 100 (100) | 100 (100) | 100 (100) | 100 (100) | 99 (100) | 98 (100) |
+| anchor | hex | 3-char | 100 (100) | 99 (100) | 87 (100) | 75 (100) | 55 (100) | 6 (90) |
+| anchor + junk | hex | 3-char | 100 (100) | 94 (100) | 72 (100) | 48 (100) | 28 (95) | 3 (63) |
+| hidden input | hex | 3-char | 100 (100) | 98 (100) | 87 (100) | 76 (100) | 46 (100) | 4 (94) |
+| anchor | alphanumeric | 3-char | 100 (100) | 100 (100) | 99 (100) | 97 (100) | 97 (100) | 81 (99) |
+| anchor + junk | alphanumeric | 3-char | 98 (100) | 98 (100) | 98 (100) | 94 (100) | 94 (100) | 75 (98) |
+| hidden input | alphanumeric | 3-char | 100 (100) | 100 (100) | 99 (100) | 100 (100) | 97 (100) | 83 (100) |
+| anchor | base64 | 3-char | 100 (100) | 100 (100) | 100 (100) | 98 (100) | 95 (99) | 73 (88) |
+| anchor + junk | base64 | 3-char | 99 (100) | 100 (100) | 98 (100) | 97 (100) | 92 (99) | 77 (94) |
+| hidden input | base64 | 3-char | 100 (100) | 100 (100) | 100 (100) | 100 (100) | 97 (100) | 80 (100) |
+| anchor | base64url | 3-char | 100 (100) | 100 (100) | 99 (100) | 99 (100) | 96 (100) | 79 (99) |
+| anchor + junk | base64url | 3-char | 100 (100) | 100 (100) | 97 (100) | 99 (100) | 98 (100) | 78 (100) |
+| hidden input | base64url | 3-char | 100 (100) | 100 (100) | 100 (100) | 99 (100) | 95 (100) | 81 (100) |
+
+What the breakdown shows:
+
+- **4-char hex barely depends on length.** It returns the one correct token up to 40 characters and only begins listing a few candidates for the longest, repeat-prone 64-character tokens — where the real token is still always listed.
+- **3-char hex is the length-sensitive case.** It is reliable to ~16 characters, then the single-answer rate drops quickly (87 → 55% from 24 to 40 characters, and near zero at 64) as more tokens leak identical window sets. The token usually stays *listed* until 64 characters, where junk after it can finally push it out of the capped candidate list.
+- **Non-hex charsets hold up far better than 3-char hex** despite also using 3-char windows, because the 36–39-symbol case-insensitive alphabet is about as sparse as 4-char hex. They stay above ~95% single through 40 characters, tapering to ~75–85% at 64; the real token is listed ~98–100% almost everywhere.
+- **Random junk after the token** (extra URL parameters in the same charset) is the main thing that erodes accuracy, since a chance overlap can let the token's tail trade places with a junk run. It is most visible in the 3-char hex `anchor + junk` row.
+
+Cells have a resolution of about ±3 points at 200 samples, so treat small cell-to-cell differences as noise.
 
 ## Blind mode
 
-Blind mode extracts tokens from a page you don't have selectors for. It only uses `background-image` requests, so it works where `@import` is blocked. Without `@import` there's no recursion: each injection is one static stylesheet. So blind mode runs in two stages.
+Blind mode extracts tokens from a page you don't have selectors for. It only uses `background-image` requests, so it works where `@import` is blocked. Without `@import` there's no recursion: each injection is one static stylesheet. Blind mode offers two methods, chosen with the **one-shot** / **recon (multi-step)** switch:
+
+| Method | Injections | Best for |
+|---|---|---|
+| One-shot | 1 | One field per kind from a shortlist of names; charsets of whole values detected automatically |
+| Recon (multi-step) | 2: discover, then extract | Several fields of the same kind, any wordlist name, per-field charsets, 4-char hex windows |
+
+### One-shot
+
+**One-shot mode** combines discovery and extraction probes in one static stylesheet: copy it, inject it once, and read the results. By default it searches hidden inputs with five common names (`csrf`, `csrf_token`, `token`, `authenticity_token`, `nonce`). You can enable meta tags, URL parameters and `data-*` attributes, choose up to eight names per kind from the built-in wordlists, and choose links, form actions or both for URLs. For URL parameters, select the likely charset and window size before copying. Input, meta and selected `data-*` values use one shared alphabet that covers hex, alphanumeric, base64 and base64url; discovery hits tell the solver which narrower charset to use.
+
+The default one-shot payload is about 5.9 MB with a local collector. On Chrome 157, a test page with one hidden token and 600 ordinary rows (about 3,000 elements) took 4.6 seconds of style recalculation. Enabling more kinds adds substantial CSS and can take much longer on busy pages; a five-lane payload is roughly 33–35 MB, which may exceed an injection point's size limit. Each kind shares one extraction lane (`input`, `meta`, `a` URL parameter, `form` URL parameter and `data-*`). If more than one field name of the same kind is present, their fragments may mix, so Frag reports the names as a collision instead of assigning a token to the wrong field. Empty whole-value fields are ignored in this collision check. Multiple elements with the *same* name can still mix, as in the existing blind flow. URL parameter values cannot be classified by the discovery probes because the surrounding URL contains other characters, so choose their charset before injection; hex is the default. Names outside the selected shortlist require changing it or using recon mode. Hosts must render, and the shared hidden-input lane uses `html:has()`.
+
+One-shot whole-value extraction uses 3-character windows to keep the CSS manageable. This can leave long hex tokens ambiguous: in a review sample of 20 random 40-character hex values, only 4 yielded a single correct one-shot guess, although the correct value was among the candidates in all 20. Recon mode can use 4-character hex windows when a more precise result is needed.
+
+### Recon (multi-step)
+
+Recon mode handles several fields of the same kind and lets you choose each field's charset individually:
 
 1. **Recon** (~129 KB). Wordlist probes report:
    - which fields exist: hidden/other inputs by `name`, `<meta name>`, `?name=` params in `a[href]` and `form[action]`, and `data-*` attributes
@@ -75,7 +123,7 @@ Blind mode extracts tokens from a page you don't have selectors for. It only use
    - **Whole values** (input, meta, data-\*): the shortest token that uses every leaked window.
    - **URL params**: candidates are ranked by how many characters they need for the token plus the junk around it. These payloads also leak where each param value starts (`=ab`) and every possible end (`ab&`, `ab#`, end of URL). Leftovers that start or end mid-value then count against a candidate.
 
-Usage: switch the UI to **blind**, copy the recon payload, inject it, then pick the discovered fields, copy the extract payload and inject that. The test area has a sample page with one field of each kind.
+Usage: switch the UI to **blind** and pick a method. For **one-shot**, copy the one-shot payload and inject it. For **recon (multi-step)**, copy the recon payload and inject it (this starts a fresh recon), then pick the discovered fields, copy the extract payload and inject that. Switch to recon when one-shot reports a collision, or when you need a field outside the shortlist or 4-char hex windows. The test area has a sample page with one field of each kind.
 
 ### Hosts
 
