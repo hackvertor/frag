@@ -60,6 +60,37 @@ When testing in the UI, inject each payload into a fresh page: a browser won't r
 
 The targeted mode and blind recon mode treat a quiet gap of one second as the boundary between extractions: the server waits for that gap before stitching, and the first request after it starts a fresh extraction. One-shot mode also waits for a quiet gap before stitching, but keeps hits across gaps so a delayed lane cannot erase an earlier one. Reset or reconfigure one-shot mode before a separate injection.
 
+### Accuracy by token length
+
+The rates above average over a range of lengths, but accuracy depends strongly on how long the token is — and for 3-char hex it falls off sharply past ~24 characters. The table below breaks it out. Each cell is `single% (listed%)`: **single** is how often Frag returns exactly one answer and it is the real token; **listed** is how often the real token is among the returned candidates (so the gap between them is how often it comes back as one of several equally plausible answers). Measured over 200 random tokens per cell in the anchor preset (with and without random same-charset junk after the href) and in a hidden input; non-hex charsets use 3-char windows plus case pairs. Regenerate from the same leak/stitch pipeline as `test/stitch.test.js` (seed `0xabcd`).
+
+| Field | Charset | Window | 8 | 16 | 24 | 32 | 40 | 64 |
+|---|---|---|---|---|---|---|---|---|
+| anchor | hex | 4-char | 100 (100) | 100 (100) | 100 (100) | 100 (100) | 99 (100) | 97 (100) |
+| anchor + junk | hex | 4-char | 100 (100) | 100 (100) | 100 (100) | 100 (100) | 100 (100) | 98 (100) |
+| hidden input | hex | 4-char | 100 (100) | 100 (100) | 100 (100) | 100 (100) | 99 (100) | 98 (100) |
+| anchor | hex | 3-char | 100 (100) | 99 (100) | 87 (100) | 75 (100) | 55 (100) | 6 (90) |
+| anchor + junk | hex | 3-char | 100 (100) | 94 (100) | 72 (100) | 48 (100) | 28 (95) | 3 (63) |
+| hidden input | hex | 3-char | 100 (100) | 98 (100) | 87 (100) | 76 (100) | 46 (100) | 4 (94) |
+| anchor | alphanumeric | 3-char | 100 (100) | 100 (100) | 99 (100) | 97 (100) | 97 (100) | 81 (99) |
+| anchor + junk | alphanumeric | 3-char | 98 (100) | 98 (100) | 98 (100) | 94 (100) | 94 (100) | 75 (98) |
+| hidden input | alphanumeric | 3-char | 100 (100) | 100 (100) | 99 (100) | 100 (100) | 97 (100) | 83 (100) |
+| anchor | base64 | 3-char | 100 (100) | 100 (100) | 100 (100) | 98 (100) | 95 (99) | 73 (88) |
+| anchor + junk | base64 | 3-char | 99 (100) | 100 (100) | 98 (100) | 97 (100) | 92 (99) | 77 (94) |
+| hidden input | base64 | 3-char | 100 (100) | 100 (100) | 100 (100) | 100 (100) | 97 (100) | 80 (100) |
+| anchor | base64url | 3-char | 100 (100) | 100 (100) | 99 (100) | 99 (100) | 96 (100) | 79 (99) |
+| anchor + junk | base64url | 3-char | 100 (100) | 100 (100) | 97 (100) | 99 (100) | 98 (100) | 78 (100) |
+| hidden input | base64url | 3-char | 100 (100) | 100 (100) | 100 (100) | 99 (100) | 95 (100) | 81 (100) |
+
+What the breakdown shows:
+
+- **4-char hex barely depends on length.** It returns the one correct token up to 40 characters and only begins listing a few candidates for the longest, repeat-prone 64-character tokens — where the real token is still always listed.
+- **3-char hex is the length-sensitive case.** It is reliable to ~16 characters, then the single-answer rate drops quickly (87 → 55% from 24 to 40 characters, and near zero at 64) as more tokens leak identical window sets. The token usually stays *listed* until 64 characters, where junk after it can finally push it out of the capped candidate list.
+- **Non-hex charsets hold up far better than 3-char hex** despite also using 3-char windows, because the 36–39-symbol case-insensitive alphabet is about as sparse as 4-char hex. They stay above ~95% single through 40 characters, tapering to ~75–85% at 64; the real token is listed ~98–100% almost everywhere.
+- **Random junk after the token** (extra URL parameters in the same charset) is the main thing that erodes accuracy, since a chance overlap can let the token's tail trade places with a junk run. It is most visible in the 3-char hex `anchor + junk` row.
+
+Cells have a resolution of about ±3 points at 200 samples, so treat small cell-to-cell differences as noise.
+
 ## Blind mode
 
 Blind mode extracts tokens from a page you don't have selectors for. It only uses `background-image` requests, so it works where `@import` is blocked. Without `@import` there's no recursion: each injection is one static stylesheet. Blind mode offers two methods, chosen with the **one-shot** / **recon (multi-step)** switch:
