@@ -197,7 +197,7 @@ Use the web UI to configure:
 | **length** | Expected token length |
 | **charset** | hex (`0-9a-f`), alphanumeric (`A-Za-z0-9`), base64 (`A-Za-z0-9+/=`) or base64url (`A-Za-z0-9-_`). See [Charsets](#charsets) |
 | **window** | Hex: 4 chars (~99% accurate, ~4.03 MB) or 3 chars (~260 KB, longer tokens may give candidates). Other charsets: 3 chars plus case pairs (~3.2–4.2 MB) |
-| **host** | Hidden inputs only: which element fires the requests. `next sibling (+)` uses `input+*` — smallest, but fails if the input has no rendering next sibling (e.g. it's the last child or another non-rendering element follows it). `html:has()` hosts on the root via `html:has(input…)`, which survives those cases at the cost of one `:has()` test per rule. Anchors render themselves, so this is ignored for them. |
+| **host** | Hidden inputs only: which element fires the requests. `html:has()` (default) hosts on the root via `html:has(input…)`, which survives a missing or non-rendering next sibling, at the cost of one `:has()` test per rule. `next sibling (+)` uses `input+*` — smallest, but fails if the input has no rendering next sibling (e.g. it's the last child or another non-rendering element follows it). Anchors render themselves, so this is ignored for them. |
 
 ### Testing
 

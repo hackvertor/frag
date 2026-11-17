@@ -162,10 +162,10 @@
     const ci = cs.cased;
     // A hidden input can't render its own background, so its requests need
     // another element. Two ways to reach one:
-    //   sibling (default): the next sibling, via `&[...]+*`. Cheap, but breaks
-    //     if the input is followed by another non-rendering element.
-    //   :has(): the root, via `html:has(&[...])`. Immune to a hidden sibling,
-    //     at the cost of a `html:has()` test per rule.
+    //   :has() (default): the root, via `html:has(&[...])`. Immune to a hidden
+    //     sibling, at the cost of a `html:has()` test per rule.
+    //   sibling: the next sibling, via `&[...]+*`. Cheaper, but breaks if the
+    //     input is followed by another non-rendering element.
     // Anchors render themselves, so hostMode is ignored for them.
     const useHas = tag === 'input' && cfg.hostMode === 'has';
     // For hidden inputs in sibling mode the requests are made by the next sibling.

@@ -115,10 +115,10 @@ function buildConfig(userConfig) {
   // of CSS; 3-char windows ~260–280 KB, but longer tokens often come back as
   // candidates. Other charsets only offer 3-char windows.
   const windowSize = windowSizeFor(charset, userConfig.windowSize);
-  // How a hidden input's requests reach a rendering element: the next sibling
-  // (`sibling`, default) or the root via html:has() (`has`), which survives a
-  // hidden element sitting next to the input. Ignored for anchors.
-  const hostMode = userConfig.hostMode === 'has' ? 'has' : 'sibling';
+  // How a hidden input's requests reach a rendering element: the root via
+  // html:has() (`has`, default), which survives a hidden element sitting next
+  // to the input, or the next sibling (`sibling`). Ignored for anchors.
+  const hostMode = userConfig.hostMode === 'sibling' ? 'sibling' : 'has';
   const sampleToken = sampleTokenFor(charset, tokenLength);
   const valuePrefix = selectorPrefix || userConfig.startSelector;
   const sampleExtra = userConfig.endSelector ? '&state=medium&rememberMe=false' : '';

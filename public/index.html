@@ -229,8 +229,8 @@
     <div class="config-row" id="cfgHostRow">
       <span class="config-label">host</span>
       <select id="cfgHost" class="config-input">
-        <option value="sibling">next sibling (+) &mdash; smaller, breaks on a hidden sibling</option>
         <option value="has">html:has() &mdash; robust to a hidden sibling, adds a :has() test per rule</option>
+        <option value="sibling">next sibling (+) &mdash; smaller, breaks on a hidden sibling</option>
       </select>
     </div>
     <div style="margin-top:12px" class="actions">
@@ -411,7 +411,7 @@ const PRESETS = {
     tokenLength: 40,
     windowSize: 4,
     charset: 'hex',
-    hostMode: 'sibling',
+    hostMode: 'has',
   },
 };
 
@@ -451,7 +451,7 @@ function loadPreset(type) {
   document.getElementById('cfgLength').value = preset.tokenLength;
   document.getElementById('cfgCharset').value = preset.charset || 'hex';
   document.getElementById('cfgWindow').value = preset.windowSize;
-  document.getElementById('cfgHost').value = preset.hostMode || 'sibling';
+  document.getElementById('cfgHost').value = preset.hostMode || 'has';
   updateHostRow();
   updateWindowOptions();
 }
@@ -550,7 +550,7 @@ async function init() {
   if (CONFIG.tag === 'input') {
     document.getElementById('cfgType').value = 'hidden';
   }
-  document.getElementById('cfgHost').value = CONFIG.hostMode || 'sibling';
+  document.getElementById('cfgHost').value = CONFIG.hostMode || 'has';
   updateHostRow();
 
   // Reverse the start/end context to full selectors
